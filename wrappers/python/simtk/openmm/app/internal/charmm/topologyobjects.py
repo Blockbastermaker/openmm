@@ -100,6 +100,9 @@ class AtomType(object):
     nbfix : dict
         Dictionary that maps nbfix terms with other atom types. Dict entries
         are (rmin, epsilon) -- precombined values for that particular atom pair
+    nbthole : dict
+        Dictionary that maps nbthole terms with atom types. Dict entries are
+        the pair-specific Thole screening factors
 
     Examples
     --------
@@ -137,6 +140,8 @@ class AtomType(object):
         # Store each NBFIX term as a dict with the atom type string matching to
         # a 2-element tuple that is rmin, epsilon
         self.nbfix = dict()
+        # Store each NBTHOLE term in a similar way
+        self.nbthole = dict()
 
     def __eq__(self, other):
         """
@@ -172,6 +177,10 @@ class AtomType(object):
         if rmin14 is None: rmin14 = rmin
         if epsilon14 is None: epsilon14 = epsilon
         self.nbfix[typename] = (rmin, epsilon, rmin14, epsilon14)
+
+    def add_nbthole(self, typename, nbt):
+        """ Adds a new NBTHOLE screening factor for this atom """
+        self.nbthole[typename] = (nbt)
 
     def __str__(self):
         return self.name
