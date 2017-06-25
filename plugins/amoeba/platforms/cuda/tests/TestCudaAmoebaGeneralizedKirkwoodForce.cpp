@@ -61,8 +61,8 @@ static void checkFiniteDifferences(vector<Vec3> forces, Context &context, vector
     // Take a small step in the direction of the energy gradient and see whether the potential energy changes by the expected amount.
 
     double norm = 0.0;
-    for (int i = 0; i < (int) forces.size(); ++i)
-        norm += forces[i].dot(forces[i]);
+    for (auto& f : forces)
+        norm += f.dot(f);
     norm = std::sqrt(norm);
     const double stepSize = 1e-3;
     double step = 0.5*stepSize/norm;
@@ -8460,7 +8460,7 @@ int main(int argc, char* argv[]) {
         std::cout << "TestCudaAmoebaGeneralizedKirkwoodForce running test..." << std::endl;
         registerAmoebaCudaKernelFactories();
         if (argc > 1)
-            Platform::getPlatformByName("CUDA").setPropertyDefaultValue("CudaPrecision", std::string(argv[1]));
+            Platform::getPlatformByName("CUDA").setPropertyDefaultValue("Precision", std::string(argv[1]));
 
         // test direct and mutual polarization cases and
         // mutual polarization w/ the cavity term

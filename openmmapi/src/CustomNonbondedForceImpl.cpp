@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2014 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -155,18 +155,14 @@ map<string, double> CustomNonbondedForceImpl::getDefaultParameters() {
 
 void CustomNonbondedForceImpl::updateParametersInContext(ContextImpl& context) {
     kernel.getAs<CalcCustomNonbondedForceKernel>().copyParametersToContext(context, owner);
+    context.systemChanged();
 }
 
-double CustomNonbondedForceImpl::calcLongRangeCorrection(const CustomNonbondedForce& force, const Context& context) {
-    if (force.getNonbondedMethod() == CustomNonbondedForce::NoCutoff || force.getNonbondedMethod() == CustomNonbondedForce::CutoffNonPeriodic)
-        return 0.0;
-    
-    // Parse the energy expression.
-    
-    map<string, Lepton::CustomFunction*> functions;
-    for (int i = 0; i < force.getNumFunctions(); i++)
-        functions[force.getTabulatedFunctionName(i)] = createReferenceTabulatedFunction(force.getTabulatedFunction(i));
-    Lepton::CompiledExpression expression = Lepton::Parser::parse(force.getEnergyFunction(), functions).createCompiledExpression();
+void CustomNonbondedForceImpl::calcLongRangeCorrection(const CustomNonbondedForce& force, const Context& context, double& coefficient, vector<double>& derivatives) {
+    if (force.getNonbondedMethod() == CustomNonbondedForce::NoCutoff || force.getNonbondedMethod() == CustomNonbondedForce::CutoffNonPeriodic) {
+        coefficient = 0.0;
+        return;
+    }
     
     // Identify all particle classes (defined by parameters), and record the class of each particle.
     
@@ -174,14 +170,17 @@ double CustomNonbondedForceImpl::calcLongRangeCorrection(const CustomNonbondedFo
     vector<vector<double> > classes;
     map<vector<double>, int> classIndex;
     vector<int> atomClass(numParticles);
+    vector<double> parameters;
     for (int i = 0; i < numParticles; i++) {
-        vector<double> parameters;
         force.getParticleParameters(i, parameters);
-        if (classIndex.find(parameters) == classIndex.end()) {
+        map<vector<double>, int>::iterator entry = classIndex.find(parameters);
+        if (entry == classIndex.end()) {
             classIndex[parameters] = classes.size();
+            atomClass[i] = classes.size();
             classes.push_back(parameters);
         }
-        atomClass[i] = classIndex[parameters];
+        else
+            atomClass[i] = entry->second;
     }
     int numClasses = classes.size();
     
@@ -223,30 +222,53 @@ double CustomNonbondedForceImpl::calcLongRangeCorrection(const CustomNonbondedFo
                 }
         }
     }
-
-    // Loop over all pairs of classes to compute the coefficient.
-
-    double sum = 0;
-    for (int i = 0; i < numClasses; i++)
-        for (int j = i; j < numClasses; j++)
-            sum += interactionCount[make_pair(i, j)]*integrateInteraction(expression, classes[i], classes[j], force, context);
+    
+    // Compute the coefficient.
+    
+    map<string, Lepton::CustomFunction*> functions;
+    for (int i = 0; i < force.getNumFunctions(); i++)
+        functions[force.getTabulatedFunctionName(i)] = createReferenceTabulatedFunction(force.getTabulatedFunction(i));
     double nPart = (double) numParticles;
     double numInteractions = (nPart*(nPart+1))/2;
-    sum /= numInteractions;
-    return 2*M_PI*nPart*nPart*sum;
-}
-
-double CustomNonbondedForceImpl::integrateInteraction(Lepton::CompiledExpression& expression, const vector<double>& params1, const vector<double>& params2,
-        const CustomNonbondedForce& force, const Context& context) {
-    const set<string>& variables = expression.getVariables();
+    Lepton::CompiledExpression expression = Lepton::Parser::parse(force.getEnergyFunction(), functions).createCompiledExpression();
+    vector<string> paramNames;
     for (int i = 0; i < force.getNumPerParticleParameters(); i++) {
         stringstream name1, name2;
         name1 << force.getPerParticleParameterName(i) << 1;
         name2 << force.getPerParticleParameterName(i) << 2;
-        if (variables.find(name1.str()) != variables.end())
-            expression.getVariableReference(name1.str()) = params1[i];
-        if (variables.find(name2.str()) != variables.end())
-            expression.getVariableReference(name2.str()) = params2[i];
+        paramNames.push_back(name1.str());
+        paramNames.push_back(name2.str());
+    }
+    double sum = 0;
+    for (int i = 0; i < numClasses; i++)
+        for (int j = i; j < numClasses; j++)
+            sum += interactionCount[make_pair(i, j)]*integrateInteraction(expression, classes[i], classes[j], force, context, paramNames);
+    sum /= numInteractions;
+    coefficient = 2*M_PI*nPart*nPart*sum;
+    
+    // Now do the same for parameter derivatives.
+    
+    int numDerivs = force.getNumEnergyParameterDerivatives();
+    derivatives.resize(numDerivs);
+    for (int k = 0; k < numDerivs; k++) {
+        expression = Lepton::Parser::parse(force.getEnergyFunction(), functions).differentiate(force.getEnergyParameterDerivativeName(k)).createCompiledExpression();
+        sum = 0;
+        for (int i = 0; i < numClasses; i++)
+            for (int j = i; j < numClasses; j++)
+                sum += interactionCount[make_pair(i, j)]*integrateInteraction(expression, classes[i], classes[j], force, context, paramNames);
+        sum /= numInteractions;
+        derivatives[k] = 2*M_PI*nPart*nPart*sum;
+    }
+}
+
+double CustomNonbondedForceImpl::integrateInteraction(Lepton::CompiledExpression& expression, const vector<double>& params1, const vector<double>& params2,
+        const CustomNonbondedForce& force, const Context& context, const vector<string>& paramNames) {
+    const set<string>& variables = expression.getVariables();
+    for (int i = 0; i < force.getNumPerParticleParameters(); i++) {
+        if (variables.find(paramNames[2*i]) != variables.end())
+            expression.getVariableReference(paramNames[2*i]) = params1[i];
+        if (variables.find(paramNames[2*i+1]) != variables.end())
+            expression.getVariableReference(paramNames[2*i+1]) = params2[i];
     }
     for (int i = 0; i < force.getNumGlobalParameters(); i++) {
         const string& name = force.getGlobalParameterName(i);

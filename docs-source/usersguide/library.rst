@@ -395,16 +395,16 @@ downloading the Xcode Tools from the App Store.
 Windows: Visual Studio
 ----------------------
 
-On Windows systems, use the C++ compiler in Visual Studio version 10 (2010) or
-later.  You can download a free version of Visual C++ Express Edition from
-http://www.microsoft.com/express/vc/.  If you plan to use use OpenMM from
+On Windows systems, use the C++ compiler in Visual Studio 2015 or later.  You
+can download a free version of the Visual Studio C++ build tools from
+http://landinghub.visualstudio.com/visual-cpp-build-tools.  If you plan to use OpenMM from
 Python, it is critical that both OpenMM and Python be compiled with the same
 version of Visual Studio.
 
 Install CMake
 =============
 
-CMake is the build system used for OpenMM.  You must install CMake version 2.8
+CMake is the build system used for OpenMM.  You must install CMake version 3.1
 or higher before attempting to build OpenMM from source.  You can get CMake from
 http://www.cmake.org/.  If you choose to build CMake from source on Linux, make
 sure you have the curses library installed beforehand, so that you will be able
@@ -446,13 +446,13 @@ CMake.
 
 * For compiling C and Fortran API wrappers, you need:
 
-   * Python 2.6 or later (http://www.python.org)
+   * Python 2.7 or later (http://www.python.org)
    * Doxygen (http://www.doxygen.org)
    * A Fortran compiler
 
 * For compiling the Python API wrappers, you need:
 
-   * Python 2.6 or later (http://www.python.org)
+   * Python 2.7 or later (http://www.python.org)
    * SWIG (http://www.swig.org)
    * Doxygen (http://www.doxygen.org)
 
@@ -509,7 +509,7 @@ Windows
 
 On Windows, perform the following steps:
 
-#. Click Start->All Programs->CMake 2.8->CMake
+#. Click Start->All Programs->CMake 3.1->CMake
 #. In the box labeled "Where is the source code:" browse to OpenMM src directory
    (containing top CMakeLists.txt)
 #. In the box labeled "Where to build the binaries" browse to your build_openmm
@@ -1836,7 +1836,7 @@ Context constructor:
 
     Platform& platform = Platform::getPlatformByName("OpenCL");
     map<string, string> properties;
-    properties["OpenCLDeviceIndex"] = "1";
+    properties["DeviceIndex"] = "1";
     Context context(system, integrator, platform, properties);
 
 After a Context is created, you can use the Platform’s \
@@ -1847,7 +1847,7 @@ OpenCL Platform
 
 The OpenCL Platform recognizes the following Platform-specific properties:
 
-* OpenCLPrecision: This selects what numeric precision to use for calculations.
+* Precision: This selects what numeric precision to use for calculations.
   The allowed values are “single”, “mixed”, and “double”.  If it is set to
   “single”, nearly all calculations are done in single precision.  This is the
   fastest option but also the least accurate.  If it is set to “mixed”, forces are
@@ -1855,7 +1855,7 @@ The OpenCL Platform recognizes the following Platform-specific properties:
   gives much better energy conservation with only a slight decrease in speed.
   If it is set to “double”, all calculations are done in double precision.  This
   is the most accurate option, but is usually much slower than the others.
-* OpenCLUseCpuPme: This selects whether to use the CPU-based PME
+* UseCpuPme: This selects whether to use the CPU-based PME
   implementation.  The allowed values are “true” or “false”.  Depending on your
   hardware, this might (or might not) improve performance.  To use this option,
   you must have FFTW (single precision, multithreaded) installed, and your CPU
@@ -1865,19 +1865,19 @@ The OpenCL Platform recognizes the following Platform-specific properties:
   zero-based index of the platform (in the OpenCL sense, not the OpenMM sense) to use,
   in the order they are returned by the OpenCL platform API.  This is useful, for
   example, in selecting whether to use a GPU or CPU based OpenCL implementation.
-* OpenCLDeviceIndex: When multiple OpenCL devices are available on your
+* DeviceIndex: When multiple OpenCL devices are available on your
   computer, this is used to select which one to use.  The value is the zero-based
   index of the device to use, in the order they are returned by the OpenCL device
   API.
 
 
 The OpenCL Platform also supports parallelizing a simulation across multiple
-GPUs.  To do that, set the OpenCLDeviceIndex property to a comma separated list
+GPUs.  To do that, set the DeviceIndex property to a comma separated list
 of values.  For example,
 
 .. code-block:: c
 
-    properties["OpenCLDeviceIndex"] = "0,1";
+    properties["DeviceIndex"] = "0,1";
 
 This tells it to use both devices 0 and 1, splitting the work between them.
 
@@ -1886,7 +1886,7 @@ CUDA Platform
 
 The CUDA Platform recognizes the following Platform-specific properties:
 
-* CudaPrecision: This selects what numeric precision to use for calculations.
+* Precision: This selects what numeric precision to use for calculations.
   The allowed values are “single”, “mixed”, and “double”.  If it is set to
   “single”, nearly all calculations are done in single precision.  This is the
   fastest option but also the least accurate.  If it is set to “mixed”, forces are
@@ -1894,7 +1894,7 @@ The CUDA Platform recognizes the following Platform-specific properties:
   gives much better energy conservation with only a slight decrease in speed.
   If it is set to “double”, all calculations are done in double precision.  This
   is the most accurate option, but is usually much slower than the others.
-* CudaUseCpuPme: This selects whether to use the CPU-based PME implementation.
+* UseCpuPme: This selects whether to use the CPU-based PME implementation.
   The allowed values are “true” or “false”.  Depending on your hardware, this
   might (or might not) improve performance.  To use this option, you must have
   FFTW (single precision, multithreaded) installed, and your CPU must support SSE
@@ -1912,20 +1912,20 @@ The CUDA Platform recognizes the following Platform-specific properties:
     appends \nvcc.exe to it.  That environment variable is set by the CUDA
     installer, so it usually is present.
 
-* CudaTempDirectory: This specifies a directory where temporary files can be
+* TempDirectory: This specifies a directory where temporary files can be
   written while compiling kernels.  OpenMM usually can locate your operating
   system’s temp directory automatically (for example, by looking for the TEMP
   environment variable), so you rarely need to specify this.
-* CudaDeviceIndex: When multiple CUDA devices are available on your computer,
+* DeviceIndex: When multiple CUDA devices are available on your computer,
   this is used to select which one to use.  The value is the zero-based index of
   the device to use, in the order they are returned by the CUDA API.
-* CudaUseBlockingSync: This is used to control how the CUDA runtime
+* UseBlockingSync: This is used to control how the CUDA runtime
   synchronizes between the CPU and GPU.  If this is set to “true” (the default),
   CUDA will allow the calling thread to sleep while the GPU is performing a
   computation, allowing the CPU to do other work.  If it is set to “false”, CUDA
   will spin-lock while the GPU is working.  Setting it to "false" can improve performance slightly,
   but also prevents the CPU from doing anything else while the GPU is working.
-* CudaDeterministicForces: In some cases, the CUDA platform may compute forces
+* DeterministicForces: In some cases, the CUDA platform may compute forces
   in ways that are not fully deterministic (typically differing in what order a
   set of numbers get added together).  This means that if you compute the forces
   twice for the same particle positions, there may be tiny differences in the
@@ -1936,12 +1936,12 @@ The CUDA Platform recognizes the following Platform-specific properties:
   performance.
 
 The CUDA Platform also supports parallelizing a simulation across multiple GPUs.
-To do that, set the CudaDeviceIndex property to a comma separated list of
+To do that, set the DeviceIndex property to a comma separated list of
 values.  For example,
 
 .. code-block:: c
 
-    properties["CudaDeviceIndex"] = "0,1";
+    properties["DeviceIndex"] = "0,1";
 
 This tells it to use both devices 0 and 1, splitting the work between them.
 
@@ -1950,7 +1950,7 @@ CPU Platform
 
 The CPU Platform recognizes the following Platform-specific properties:
 
-* CpuThreads: This specifies the number of CPU threads to use.  If you do not
+* Threads: This specifies the number of CPU threads to use.  If you do not
   specify this, OpenMM will select a default number of threads as follows:
 
   * If an environment variable called OPENMM_CPU_THREADS is set, its value is
@@ -2568,23 +2568,21 @@ install binary packages).
 Installing on Windows
 ---------------------
 
-OpenMM on Windows only works with Python 3.3, so make sure that version is
+OpenMM on Windows only works with Python 3.5, so make sure that version is
 installed before you try installing. For Python installation packages and
-instructions, go to http://python.org.  Note that if you have a 64-bit machine,
-you should still install the 32-bit version of Python since the OpenMM Python
-API binary is 32-bit.  We suggest that you install Python using the default
-options.
+instructions, go to http://python.org.  We suggest that you install Python using
+the default options.
 
 Double click on the Python API Installer icon, located in the top level
 directory for the OpenMM installation (by default, this is C:\Program
 Files\OpenMM).  This will install the OpenMM package into the Python
 installation area.  If you have more than one Python installation, you will be
-asked which Python to use—make sure to select Python 3.3.
+asked which Python to use—make sure to select Python 3.5.
 
 Installing on Linux and Mac
 ---------------------------
 
-Make sure you have Python 2.6 or later installed.  For Python installation
+Make sure you have Python 2.7 or later installed.  For Python installation
 packages and instructions, go to http://python.org.  If you do not have the
 correct Python version, install a valid version using the default options.  Most
 versions of Linux and Mac OS X have a suitable Python preinstalled.  You can
@@ -2593,7 +2591,8 @@ check by typing “\ :code:`python` |--|\ :code:`version`\ ” in a terminal win
 You must have a C++ compiler to install the OpenMM Python API.  If you are using
 a Mac, install Apple's Xcode development tools
 (http://developer.apple.com/TOOLS/Xcode) to get the needed compiler.  On other
-Unix-type systems, install gcc or clang.
+Unix-type systems, install gcc or clang.  We recommend clang, since it produces
+faster code than gcc.
 
 The install.sh script installs the Python API automatically as part of the
 installation process, so you probably already have it installed.  If for some

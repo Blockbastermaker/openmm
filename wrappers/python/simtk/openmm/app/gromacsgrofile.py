@@ -6,7 +6,7 @@ Simbios, the NIH National Center for Physics-Based Simulation of
 Biological Structures at Stanford, funded under the NIH Roadmap for
 Medical Research, grant U54 GM072970. See https://simtk.org.
 
-Portions copyright (c) 2012-2015 Stanford University and the Authors.
+Portions copyright (c) 2012-2016 Stanford University and the Authors.
 Authors: Lee-Ping Wang, Peter Eastman
 Contributors:
 
@@ -35,6 +35,7 @@ __version__ = "1.0"
 import os
 import sys
 from simtk.openmm import Vec3
+from simtk.openmm.app.internal.unitcell import reducePeriodicBoxVectors
 from re import sub, match
 from simtk.unit import nanometers, angstroms, Quantity
 from . import element as elem
@@ -68,11 +69,14 @@ def _is_gro_coord(line):
     @param[in] line The line to be tested
 
     """
-    sline = line.split()
-    if len(sline) == 6 or len(sline) == 9:
-        return all([_isint(sline[2]), _isfloat(sline[3]), _isfloat(sline[4]), _isfloat(sline[5])])
-    elif len(sline) == 5 or len(sline) == 8:
-        return all([_isint(line[15:20]), _isfloat(sline[2]), _isfloat(sline[3]), _isfloat(sline[4])])
+    # data lines are fixed field
+    fields = []
+    fields.append(line[16:20].strip()) # atom number
+    fields.append(line[21:28].strip()) # x coord
+    fields.append(line[29:36].strip()) # y coord
+    fields.append(line[37:44].strip()) # z coord
+    if (all([f != '' for f in fields])): # check for empty fields
+        return all([_isint(fields[0]), _isfloat(fields[1]), _isfloat(fields[2]), _isfloat(fields[3])])
     else:
         return 0
 
@@ -100,7 +104,7 @@ def _construct_box_vectors(line):
     values = [float(i) for i in sline]
     if len(sline) == 3:
         return (Vec3(values[0], 0, 0), Vec3(0, values[1], 0), Vec3(0, 0, values[2]))*nanometers
-    return (Vec3(values[0], values[3], values[4]), Vec3(values[5], values[1], values[6]), Vec3(values[7], values[8], values[2]))*nanometers
+    return reducePeriodicBoxVectors((Vec3(values[0], values[3], values[4]), Vec3(values[5], values[1], values[6]), Vec3(values[7], values[8], values[2]))*nanometers)
 
 class GromacsGroFile(object):
     """GromacsGroFile parses a Gromacs .gro file and constructs a set of atom positions from it.

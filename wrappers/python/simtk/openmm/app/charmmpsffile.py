@@ -178,23 +178,23 @@ class CharmmPsfFile(object):
         if not os.path.exists(psf_name):
             raise IOError('Could not find PSF file %s' % psf_name)
         # Open the PSF and read the first line. It must start with "PSF"
-        psf = open(psf_name, 'r')
-        line = psf.readline()
-        if not line.startswith('PSF'):
-            raise CharmmPSFError('Unrecognized PSF file. First line is %s' %
-                                 line.strip())
-        # Store the flags
-        psf_flags = line.split()[1:]
-        # Now get all of the sections and store them in a dict
-        psf.readline()
-        # Now get all of the sections
-        psfsections = _ZeroDict()
-        while True:
-            try:
-                sec, ptr, data = CharmmPsfFile._parse_psf_section(psf)
-            except CharmmPsfEOF:
-                break
-            psfsections[sec] = (ptr, data)
+        with open(psf_name, 'r') as psf:
+            line = psf.readline()
+            if not line.startswith('PSF'):
+                raise CharmmPSFError('Unrecognized PSF file. First line is %s' %
+                                     line.strip())
+            # Store the flags
+            psf_flags = line.split()[1:]
+            # Now get all of the sections and store them in a dict
+            psf.readline()
+            # Now get all of the sections
+            psfsections = _ZeroDict()
+            while True:
+                try:
+                    sec, ptr, data = CharmmPsfFile._parse_psf_section(psf)
+                except CharmmPsfEOF:
+                    break
+                psfsections[sec] = (ptr, data)
         # store the title
         title = psfsections['NTITLE'][1]
         # Next is the number of atoms
@@ -678,7 +678,8 @@ class CharmmPsfFile(object):
                      hydrogenMass=None,
                      ewaldErrorTolerance=0.0005,
                      flexibleConstraints=True,
-                     verbose=False):
+                     verbose=False,
+                     gbsaModel=None):
         """Construct an OpenMM System representing the topology described by the
         prmtop file. You MUST have loaded a parameter set into this PSF before
         calling createSystem. If not, AttributeError will be raised. ValueError
@@ -690,7 +691,7 @@ class CharmmPsfFile(object):
             The parameter set to use to parametrize this molecule
         nonbondedMethod : object=NoCutoff
             The method to use for nonbonded interactions. Allowed values are
-            NoCutoff, CutoffNonPeriodic, CutoffPeriodic, Ewald, or PME.
+            NoCutoff, CutoffNonPeriodic, CutoffPeriodic, Ewald, PME, or LJPME.
         nonbondedCutoff : distance=1*nanometer
             The cutoff distance to use for nonbonded interactions.
         switchDistance : distance=0*nanometer
@@ -728,15 +729,21 @@ class CharmmPsfFile(object):
             added to a hydrogen is subtracted from the heavy atom to keep their
             total mass the same.
         ewaldErrorTolerance : float=0.0005
-            The error tolerance to use if the nonbonded method is Ewald or PME.
+            The error tolerance to use if the nonbonded method is Ewald, PME, or LJPME.
         flexibleConstraints : bool=True
             Are our constraints flexible or not?
         verbose : bool=False
             Optionally prints out a running progress report
+        gbsaModel : str=None
+            Can be ACE (to use the ACE solvation model) or None. Other values
+            raise a ValueError
         """
         # Load the parameter set
         self.loadParameters(params.condense())
         hasbox = self.topology.getUnitCellDimensions() is not None
+        # Check GB input parameters
+        if implicitSolvent is not None and gbsaModel not in ('ACE', None):
+            raise ValueError('gbsaModel must be ACE or None')
         # Set the cutoff distance in nanometers
         cutoff = None
         if nonbondedMethod is not ff.NoCutoff:
@@ -746,10 +753,10 @@ class CharmmPsfFile(object):
                 cutoff = cutoff.value_in_unit(u.nanometers)
 
         if nonbondedMethod not in (ff.NoCutoff, ff.CutoffNonPeriodic,
-                                   ff.CutoffPeriodic, ff.Ewald, ff.PME):
+                                   ff.CutoffPeriodic, ff.Ewald, ff.PME, ff.LJPME):
             raise ValueError('Illegal value for nonbonded method')
         if not hasbox and nonbondedMethod in (ff.CutoffPeriodic,
-                                              ff.Ewald, ff.PME):
+                                              ff.Ewald, ff.PME, ff.LJPME):
             raise ValueError('Illegal nonbonded method for a '
                              'non-periodic system')
         if implicitSolvent not in (HCT, OBC1, OBC2, GBn, GBn2, None):
@@ -906,8 +913,10 @@ class CharmmPsfFile(object):
 
         if verbose: print('Adding impropers...')
         # Ick. OpenMM does not have an improper torsion class. Need to
-        # construct one from CustomTorsionForce
-        force = mm.CustomTorsionForce('k*(theta-theta0)^2')
+        # construct one from CustomTorsionForce that respects toroidal boundaries
+        energy_function = 'k*min(dtheta, 2*pi-dtheta)^2; dtheta = abs(theta-theta0);'
+        energy_function += 'pi = %f;' % pi
+        force = mm.CustomTorsionForce(energy_function)
         force.addPerTorsionParameter('k')
         force.addPerTorsionParameter('theta0')
         force.setForceGroup(self.IMPROPER_FORCE_GROUP)
@@ -1009,6 +1018,8 @@ class CharmmPsfFile(object):
                 force.setNonbondedMethod(mm.NonbondedForce.Ewald)
             elif nonbondedMethod is ff.PME:
                 force.setNonbondedMethod(mm.NonbondedForce.PME)
+            elif nonbondedMethod is ff.LJPME:
+                force.setNonbondedMethod(mm.NonbondedForce.LJPME)
             else:
                 raise ValueError('Cutoff method is not understood')
 
@@ -1088,8 +1099,7 @@ class CharmmPsfFile(object):
                     mm.Discrete2DFunction(num_lj_types, num_lj_types, bcoef))
             cforce.addPerParticleParameter('type')
             cforce.setForceGroup(self.NONBONDED_FORCE_GROUP)
-            if (nonbondedMethod is ff.PME or nonbondedMethod is ff.Ewald or
-                        nonbondedMethod is ff.CutoffPeriodic):
+            if (nonbondedMethod in (ff.PME, ff.LJPME, ff.Ewald, ff.CutoffPeriodic)):
                 cforce.setNonbondedMethod(cforce.CutoffPeriodic)
                 cforce.setCutoffDistance(nonbondedCutoff)
                 cforce.setUseLongRangeCorrection(True)
@@ -1188,19 +1198,19 @@ class CharmmPsfFile(object):
                 implicitSolventKappa = implicitSolventKappa.value_in_unit(
                                             (1.0/u.nanometer).unit)
             if implicitSolvent is HCT:
-                gb = GBSAHCTForce(solventDielectric, soluteDielectric, None,
+                gb = GBSAHCTForce(solventDielectric, soluteDielectric, gbsaModel,
                                   cutoff, kappa=implicitSolventKappa)
             elif implicitSolvent is OBC1:
-                gb = GBSAOBC1Force(solventDielectric, soluteDielectric, None,
+                gb = GBSAOBC1Force(solventDielectric, soluteDielectric, gbsaModel,
                                    cutoff, kappa=implicitSolventKappa)
             elif implicitSolvent is OBC2:
-                gb = GBSAOBC2Force(solventDielectric, soluteDielectric, None,
+                gb = GBSAOBC2Force(solventDielectric, soluteDielectric, gbsaModel,
                                    cutoff, kappa=implicitSolventKappa)
             elif implicitSolvent is GBn:
-                gb = GBSAGBnForce(solventDielectric, soluteDielectric, None,
+                gb = GBSAGBnForce(solventDielectric, soluteDielectric, gbsaModel,
                                   cutoff, kappa=implicitSolventKappa)
             elif implicitSolvent is GBn2:
-                gb = GBSAGBn2Force(solventDielectric, soluteDielectric, None,
+                gb = GBSAGBn2Force(solventDielectric, soluteDielectric, gbsaModel,
                                    cutoff, kappa=implicitSolventKappa)
             gb_parms = gb.getStandardParameters(self.topology)
             for atom, gb_parm in zip(self.atom_list, gb_parms):
@@ -1217,6 +1227,7 @@ class CharmmPsfFile(object):
             else:
                 raise ValueError('Illegal nonbonded method for use with GBSA')
             gb.setForceGroup(self.GB_FORCE_GROUP)
+            gb.finalize()
             system.addForce(gb)
             force.setReactionFieldDielectric(1.0) # applies to NonbondedForce
 

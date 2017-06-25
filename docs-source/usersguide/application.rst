@@ -63,7 +63,7 @@ Anaconda or Miniconda.
 
 2. (Optional) If you want to run OpenMM on a GPU, install CUDA and/or OpenCL.
 
-  * If you have an Nvidia GPU, download CUDA 7.5 from
+  * If you have an Nvidia GPU, download CUDA 8.0 from
     https://developer.nvidia.com/cuda-downloads.  Be sure to install both the
     drivers and toolkit.  OpenCL is included with the CUDA drivers.
   * If you have an AMD GPU and are using Linux or Windows, download the latest
@@ -105,7 +105,7 @@ and tell it to install the command line tools.  With Xcode 4.2 and earlier, the
 command line tools are automatically installed when you install Xcode.)
 
 3. (Optional) If you have an Nvidia GPU and want to use the CUDA platform,
-download CUDA 7.5 from https://developer.nvidia.com/cuda-downloads.  Be sure to
+download CUDA 8.0 from https://developer.nvidia.com/cuda-downloads.  Be sure to
 install both the drivers and toolkit.
 
 4. (Optional) If you plan to use the CPU platform, it is recommended that you
@@ -164,14 +164,14 @@ Installing on Linux
 https://simtk.org/project/xml/downloads.xml?group_id=161, then double click the
 .zip file to expand it.
 
-2. Make sure you have Python 2.6 or higher (earlier versions will not work) and
+2. Make sure you have Python 2.7 or higher (earlier versions will not work) and
 a C++ compiler (typically :program:`gcc` or :program:`clang`) installed on your computer.  You can
 check what version of Python is installed by typing :code:`python` |--|\ :code:`version`
 into a console window.
 
 3. (Optional) If you want to run OpenMM on a GPU, install CUDA and/or OpenCL.
 
-  * If you have an Nvidia GPU, download CUDA 7.5 from
+  * If you have an Nvidia GPU, download CUDA 8.0 from
     https://developer.nvidia.com/cuda-downloads.  Be sure to install both the
     drivers and toolkit.  OpenCL is included with the CUDA drivers.
   * If you have an AMD GPU, download the latest version of the Catalyst driver
@@ -243,7 +243,7 @@ and ignore it.)
 
 4. (Optional) If you want to run OpenMM on a GPU, install CUDA and/or OpenCL.
 
-  * If you have an Nvidia GPU, download CUDA 7.5 from
+  * If you have an Nvidia GPU, download CUDA 8.0 from
     https://developer.nvidia.com/cuda-downloads.  Be sure to install both the
     drivers and toolkit.  OpenCL is included with the CUDA drivers.
   * If you have an AMD GPU, download the latest version of the Catalyst driver
@@ -746,7 +746,7 @@ double precision:
 ::
 
     platform = Platform.getPlatformByName('CUDA')
-    properties = {'CudaDeviceIndex': '0,1', 'CudaPrecision': 'double'}
+    properties = {'DeviceIndex': '0,1', 'Precision': 'double'}
     simulation = Simulation(prmtop.topology, system, integrator, platform, properties)
 
 .. _force-fields:
@@ -775,7 +775,9 @@ File                           Force Field
 :code:`amber99sbnmr.xml`       Amber99SB with modifications to fit NMR data\ :cite:`Li2010`
 :code:`amber03.xml`            Amber03\ :cite:`Duan2003`
 :code:`amber10.xml`            Amber10 (documented in the AmberTools_ manual as `ff10`)
-:code:`amoeba2009.xml`         AMOEBA 2009\ :cite:`Ren2002`.  This force field is deprecated.  It is
+:code:`amberfb15.xml`          AMBER-FB15\ :cite:`Wang2017`. Intramolecular parameters optimized with
+                               ForceBalance using high-level ab initio data.
+:code:`amoeba2009.xml`         AMOEBA 2009\ :cite:`Ren2002`.  This force field is deprecated.  It is 
                                recommended to use AMOEBA 2013 instead.
 :code:`amoeba2013.xml`         AMOEBA 2013\ :cite:`Shi2013`
 :code:`charmm_polar_2013.xml`  CHARMM 2013 polarizable force field\ :cite:`Lopes2013`
@@ -916,8 +918,9 @@ Value                      Meaning
 :code:`NoCutoff`           No cutoff is applied.
 :code:`CutoffNonPeriodic`  The reaction field method is used to eliminate all interactions beyond a cutoff distance.  Not valid for AMOEBA.
 :code:`CutoffPeriodic`     The reaction field method is used to eliminate all interactions beyond a cutoff distance.  Periodic boundary conditions are applied, so each atom interacts only with the nearest periodic copy of every other atom.  Not valid for AMOEBA.
-:code:`Ewald`              Periodic boundary conditions are applied.  Ewald summation is used to compute long range interactions.  (This option is rarely used, since PME is much faster for all but the smallest systems.)  Not valid for AMOEBA.
-:code:`PME`                Periodic boundary conditions are applied.  The Particle Mesh Ewald method is used to compute long range interactions.
+:code:`Ewald`              Periodic boundary conditions are applied.  Ewald summation is used to compute long range Coulomb interactions.  (This option is rarely used, since PME is much faster for all but the smallest systems.)  Not valid for AMOEBA.
+:code:`PME`                Periodic boundary conditions are applied.  The Particle Mesh Ewald method is used to compute long range Coulomb interactions.
+:code:`LJPME`              Periodic boundary conditions are applied.  The Particle Mesh Ewald method is used to compute long range interactions for both Coulomb and Lennard-Jones.
 =========================  ===========================================================================================================================================================================================================================================
 
 
@@ -926,7 +929,7 @@ cutoff distance.  Be sure to specify units, as shown in the examples above. For
 example, :code:`nonbondedCutoff=1.5*nanometers` or
 :code:`nonbondedCutoff=12*angstroms` are legal values.
 
-When using :code:`Ewald` or :code:`PME`\ , you can optionally specify an
+When using :code:`Ewald`, :code:`PME`, or :code:`LJPME`\ , you can optionally specify an
 error tolerance for the force computation.  For example:
 ::
 
@@ -2063,6 +2066,107 @@ are :code:`wo1`\ , :code:`wo2`\ , :code:`wo3`\ , :code:`wx1`\ , :code:`wx2`\ ,
 :code:`wx3`\ , :code:`wy1`\ , :code:`wy2`\ , :code:`wy3`\ , :code:`p1`\ ,
 :code:`p2`\ , and :code:`p3`\ .
 
+<Patches>
+=========
+
+A "patch" is a set of rules for modifying a residue template (or possibly multiple
+templates at once).  For example a terminal amino acid is slightly different from
+one in the middle of a chain.  A force field could of course define multiple
+templates for each amino acid (standard, N-terminal, C-terminal, and monomer),
+but since the modifications are the same for nearly all amino acids, it is simpler
+to include only the "standard" templates, along with a set of patches for
+modifying terminal residues.
+
+Here is an example of a patch definition:
+
+.. code-block:: xml
+
+    <Patch name="NTER">
+     <RemoveAtom name="H"/>
+     <RemoveBond atomName1="N" atomName2="H"/>
+     <AddAtom name="H1" type="H"/>
+     <AddAtom name="H2" type="H"/>
+     <AddAtom name="H3" type="H"/>
+     <AddBond atomName1="N" atomName2="H1"/>
+     <AddBond atomName1="N" atomName2="H2"/>
+     <AddBond atomName1="N" atomName2="H3"/>
+     <RemoveExternalBond atomName="N"/>
+     <ChangeAtom name="N" type="N3"/>
+    </Patch>
+
+There is one :code:`<Patch>` tag for each patch definition.  That in turn may
+contain any of the following tags:
+
+ * An :code:`<AddAtom>` tag indicates that an atom should be added to the
+   template.  It specifies the name of the atom and its atom type.
+ * A :code:`<ChangeAtom>` tag indicates that the type of an atom already present
+   in the template should be altered.  It specifies the name of the atom and its
+   new atom type.
+ * A :code:`<RemoveAtom>` tag indicates that an atom should be removed from the
+   template.  It specifies the name of the atom to remove.
+ * An :code:`<AddBond>` tag indicates that a bond should be added to the
+   template.  It specifies the names of the two bonded atoms.
+ * A :code:`<RemoveBond>` tag indicates that a bond already present in the
+   template should be removed.  It specifies the names of the two bonded atoms.
+ * An :code:`<AddExternalBond>` tag indicates that a new external bond should be
+   added to the template.  It specifies the name of the bonded atom.
+ * A :code:`<RemoveExternalBond>` tag indicates that an external bond aleady
+   present in the template should be removed.  It specifies the name of the
+   bonded atom.
+
+In addition to defining the patches, you also must identify which residue
+templates each patch can be applied to.  This can be done in two ways.  The more
+common one is to have each template identify the patches that can be applied to
+it.  This is done with an :code:`<AllowPatch>` tag:
+
+.. code-block:: xml
+
+    <Residue name="ALA">
+     <AllowPatch name="CTER"/>
+     <AllowPatch name="NTER"/>
+     ...
+    </Residue>
+
+Alternatively, the patch can indicate which residues it may be applied to.  This
+is done with an :code:`<ApplyToResidue>` tag:
+
+.. code-block:: xml
+
+    <Patch name="NTER">
+     <ApplyToResidue name="ALA"/>
+     <ApplyToResidue name="ARG"/>
+     ...
+    </Patch>
+
+A patch can alter multiple templates at once.  This is useful for creating bonds
+between molecules, and allows the atom types in one residue to depend on the
+identity of the other residue it is bonded to.  To create a multi-residue patch,
+added a :code:`residues` attribute to the :code:`<Patch>` tag specifying how many
+residues that patch covers.  Then whenever you refer to an atom, prefix its name
+with the index of the residue it belongs to:
+
+.. code-block:: xml
+
+  <Patch name="Disulfide" residues="2">
+    <RemoveAtom name="1:HG"/>
+    <RemoveAtom name="2:HG"/>
+    <AddBond atomName1="1:SG" atomName2="2:SG"/>
+    <ApplyToResidue name="1:CYS"/>
+    <ApplyToResidue name="2:CYS"/>
+  </Patch>
+
+In this example, the patch modifies two residues of the same type, but that need
+not always be true.  Each :code:`<ApplyToResidue>` tag therefore indicates which
+one of the residue templates it modifies may be of the specified type.  Similarly,
+if a residue template includes an :code:`<AcceptPatch>` tag for a multi-residue
+patch, it must specify the name of the patch, followed by the index of the residue
+within that patch:
+
+.. code-block:: xml
+
+    <AllowPatch name="Disulfide:1"/>
+
+
 Missing residue templates
 =========================
 
@@ -2595,6 +2699,62 @@ must include an attribute called :code:`radius`\ .
 CustomGBForce also allows you to define tabulated functions.  See section
 :ref:`tabulated-functions` for details.
 
+<CustomHbondForce>
+=========================
+
+To add a CustomHbondForce to the System, include a tag that looks like this:
+
+.. code-block:: xml
+
+    <CustomHbondForce particlesPerDonor="3" particlesPerAcceptor="2" bondCutoff="2"
+        energy="scale*k*(distance(a1,d1)-r0)^2*(angle(a1,d1,d2)-theta0)^2">
+     <GlobalParameter name="scale" defaultValue="1"/>
+     <PerDonorParameter name="theta0"/>
+     <PerAcceptorParameter name="k"/>
+     <PerAcceptorParameter name="r0"/>
+     <Donor class1="H" class2="N" class3="C" theta0="2.1"/>
+     <Acceptor class1="O" class2="C" k="115.0" r0="0.2"/>
+     ...
+    </CustomHbondForce>
+
+The energy expression for the CustomHbondForce is specified by the
+:code:`energy` attribute.  This is a mathematical expression that gives the
+energy of each donor-acceptor interaction as a function of various particle coordinates,
+distances, and angles.  See the API documentation for details.  :code:`particlesPerDonor`
+specifies the number of particles that make up a donor group, and :code:`particlesPerAcceptor`
+specifies the number of particles that make up an acceptor group.
+
+The expression may depend on an arbitrary list of global, per-donor, or
+per-acceptor parameters.  Use a :code:`<GlobalParameter>` tag to define a global
+parameter, a :code:`<PerDonorParameter>` tag to define a per-donor parameter,
+and a :code:`<PerAcceptorParameter>` tag to define a per-acceptor parameter.
+
+Exclusions are created automatically based on the :code:`bondCutoff` attribute.
+If any atom of a donor is within the specified distance (measured in bonds) of
+any atom of an acceptor, an exclusion is added to prevent them from interacting
+with each other.  If a donor and an acceptor share any atom in common, that is a
+bond distance of 0, so they are always excluded.
+
+Every :code:`<Donor>` or :code:`<Acceptor>` tag defines a rule for creating donor
+or acceptor groups.  The number of atoms specified in each one must match the
+value of :code:`particlesPerDonor` or :code:`particlesPerAcceptor` specified in the
+parent tag. Each tag may identify the atoms either by type (using the attributes
+:code:`type1`\ , :code:`type2`\ , ...) or by class (using the attributes
+:code:`class1`\ , :code:`class2`\ , ...).  The force field considers every atom
+in the system (if the number of atoms is 1), every pair of bonded atoms (if the number
+of atoms is 2), or every set of three atoms where the first is bonded to the second
+and the second to the third (if the number of atoms is 3).  For each one, it searches
+for a rule whose atom types or atom classes match the atoms.  If it finds one,
+it calls :code:`addDonor()` or :code:`addAcceptor()` on the CustomHbondForce.
+Otherwise, it ignores that set and continues. The remaining attributes are the
+values to use for the per-donor and per-acceptor parameters. All parameters must
+be specified for every tag, and the attribute name must match the name of the
+parameter.  For instance, if there is a per-donor parameter with the name “k”,
+then every :code:`<Donor>` tag must include an attribute called :code:`k`\ .
+
+CustomHbondForce also allows you to define tabulated functions.  See section
+:ref:`tabulated-functions` for details.
+
 <CustomManyParticleForce>
 =========================
 
@@ -2615,7 +2775,7 @@ To add a CustomManyParticleForce to the System, include a tag that looks like th
 
 The energy expression for the CustomManyParticleForce is specified by the
 :code:`energy` attribute.  This is a mathematical expression that gives the
-energy of each pairwise interaction as a function of various particle coordinates,
+energy of each interaction as a function of various particle coordinates,
 distances, and angles.  See the API documentation for details.  :code:`particlesPerSet`
 specifies the number of particles involved in the interaction and
 :code:`permutationMode` specifies the permutation mode.
@@ -2775,6 +2935,32 @@ Notice that the :code:`charge` attribute is missing, and that the parameters
 are specified by class, not by type.  This means that sigma and epsilon only
 need to be specified once for each class.  The atom charges, which are different
 for each type, are taken from the residue template instead.
+
+
+Including Other Files
+=====================
+
+Sometimes it is useful to split a force field definition into multiple files,
+but still be able to use the force field by specifying only a single file.  You
+can accomplish this with the :code:`<Include>` tag.  For example:
+
+.. code-block:: xml
+
+    <ForceField>
+     <Include file="definitions.xml"/>
+     ...
+    </ForceField>
+
+The :code:`file` attribute gives the path of the file to include.  It may be
+relative either to the directory containing the parent XML file (the one with
+the :code:`<Include>` tag) or the OpenMM data directory (the one containing
+built in force fields).
+
+The included file is fully processed before any other tags in the parent file
+are processed, and its definitions are added to the force field.  This means the
+parent file can refer to atom types defined in the included file, but not the
+other way around.  If there are multiple :code:`<Include>` tags, they are processed
+in the order they appear in the file.
 
 
 Using Multiple Files

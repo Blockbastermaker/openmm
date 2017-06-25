@@ -9,7 +9,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2010-2012 Stanford University and the Authors.      *
+ * Portions copyright (c) 2010-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -52,10 +52,11 @@ namespace OpenMM {
  * part of the system definition, while values of global parameters may be modified during a simulation by calling Context::setParameter().
  * Finally, call addTorsion() once for each torsion.  After an torsion has been added, you can modify its parameters by calling setTorsionParameters().
  * This will have no effect on Contexts that already exist unless you call updateParametersInContext().
+ * Note that theta is guaranteed to be in the range [-pi,+pi], which may cause issues with force discontinuities if the energy function does not respect this domain.
  *
- * As an example, the following code creates a CustomTorsionForce that implements a harmonic potential:
+ * As an example, the following code creates a CustomTorsionForce that implements a periodic potential:
  *
- * <tt>CustomTorsionForce* force = new CustomTorsionForce("0.5*k*(theta-theta0)^2");</tt>
+ * <tt>CustomTorsionForce* force = new CustomTorsionForce("0.5*k*(1-cos(theta-theta0))");</tt>
  *
  * This force depends on two parameters: the spring constant k and equilibrium angle theta0.  The following code defines these parameters:
  *
@@ -63,6 +64,14 @@ namespace OpenMM {
  * force->addPerTorsionParameter("k");
  * force->addPerTorsionParameter("theta0");
  * </pre></tt>
+ *
+ * If a harmonic restraint is desired, it is important to be careful of the domain for theta, using an idiom like this:
+ *
+ * <tt>CustomTorsionForce* force = new CustomTorsionForce("0.5*k*min(dtheta, 2*pi-dtheta)^2; dtheta = abs(theta-theta0); pi = 3.1415926535");</tt>
+ *
+ * This class also has the ability to compute derivatives of the potential energy with respect to global parameters.
+ * Call addEnergyParameterDerivative() to request that the derivative with respect to a particular parameter be
+ * computed.  You can then query its value in a Context by calling getState() on it.
  *
  * Expressions may involve the operators + (add), - (subtract), * (multiply), / (divide), and ^ (power), and the following
  * functions: sqrt, exp, log, sin, cos, sec, csc, tan, cot, asin, acos, atan, sinh, cosh, tanh, erf, erfc, min, max, abs, floor, ceil, step, delta, select.  All trigonometric functions
@@ -96,6 +105,13 @@ public:
      */
     int getNumGlobalParameters() const {
         return globalParameters.size();
+    }
+    /**
+     * Get the number of global parameters with respect to which the derivative of the energy
+     * should be computed.
+     */
+    int getNumEnergyParameterDerivatives() const {
+        return energyParameterDerivatives.size();
     }
     /**
      * Get the algebraic expression that gives the interaction energy for each torsion
@@ -163,6 +179,21 @@ public:
      */
     void setGlobalParameterDefaultValue(int index, double defaultValue);
     /**
+     * Request that this Force compute the derivative of its energy with respect to a global parameter.
+     * The parameter must have already been added with addGlobalParameter().
+     *
+     * @param name             the name of the parameter
+     */
+    void addEnergyParameterDerivative(const std::string& name);
+    /**
+     * Get the name of a global parameter with respect to which this Force should compute the
+     * derivative of the energy.
+     *
+     * @param index     the index of the parameter derivative, between 0 and getNumEnergyParameterDerivatives()
+     * @return the parameter name
+     */
+    const std::string& getEnergyParameterDerivativeName(int index) const;
+    /**
      * Add a torsion term to the force field.
      *
      * @param particle1     the index of the first particle connected by the torsion
@@ -207,14 +238,17 @@ public:
      */
     void updateParametersInContext(Context& context);
     /**
+     * Set whether this force should apply periodic boundary conditions when calculating displacements.
+     * Usually this is not appropriate for bonded forces, but there are situations when it can be useful.
+     */
+    void setUsesPeriodicBoundaryConditions(bool periodic);
+    /**
      * Returns whether or not this force makes use of periodic boundary
      * conditions.
      *
      * @returns true if force uses PBC and false otherwise
      */
-    bool usesPeriodicBoundaryConditions() const {
-        return false;
-    }
+    bool usesPeriodicBoundaryConditions() const;
 protected:
     ForceImpl* createImpl() const;
 private:
@@ -225,6 +259,8 @@ private:
     std::vector<TorsionParameterInfo> parameters;
     std::vector<GlobalParameterInfo> globalParameters;
     std::vector<TorsionInfo> torsions;
+    std::vector<int> energyParameterDerivatives;
+    bool usePeriodic;
 };
 
 /**

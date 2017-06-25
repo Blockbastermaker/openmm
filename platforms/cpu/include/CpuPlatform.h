@@ -9,7 +9,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2013 Stanford University and the Authors.           *
+ * Portions copyright (c) 2013-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -34,6 +34,7 @@
 
 #include "AlignedArray.h"
 #include "CpuRandom.h"
+#include "CpuNeighborList.h"
 #include "ReferencePlatform.h"
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/internal/ThreadPool.h"
@@ -64,7 +65,16 @@ public:
      * This is the name of the parameter for selecting the number of threads to use.
      */
     static const std::string& CpuThreads() {
-        static const std::string key = "CpuThreads";
+        static const std::string key = "Threads";
+        return key;
+    }
+    /**
+     * This is the name of the parameter for requesting that force computations be deterministic.  Setting
+     * this to "true" DOES NOT GUARANTEE that the forces will actually be fully deterministic, but it does
+     * try to reduce the variation in them at the cost of a small loss in performance.
+     */
+    static const std::string& CpuDeterministicForces() {
+        static const std::string key = "DeterministicForces";
         return key;
     }
     /**
@@ -79,13 +89,19 @@ private:
 
 class CpuPlatform::PlatformData {
 public:
-    PlatformData(int numParticles, int numThreads);
+    PlatformData(int numParticles, int numThreads, bool deterministicForces);
+    ~PlatformData();
+    void requestNeighborList(double cutoffDistance, double padding, bool useExclusions, const std::vector<std::set<int> >& exclusionList);
     AlignedArray<float> posq;
     std::vector<AlignedArray<float> > threadForce;
     ThreadPool threads;
     bool isPeriodic;
     CpuRandom random;
     std::map<std::string, std::string> propertyValues;
+    CpuNeighborList* neighborList;
+    double cutoff, paddedCutoff;
+    bool anyExclusions, deterministicForces;
+    std::vector<std::set<int> > exclusions;
 };
 
 } // namespace OpenMM

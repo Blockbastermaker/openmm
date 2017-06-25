@@ -107,9 +107,9 @@ __device__ void computeOneInteraction(AtomData& atom1, AtomData& atom2, bool has
 
     real dmp = atom1.damp*atom2.damp;
     real a = min(atom1.thole, atom2.thole);
-    real u = fabs(dmp) > 1.0e-5f ? r/dmp : 1e10f;
-    real au3 = a*u*u*u;
-    real expau3 = au3 < 50 ? EXP(-au3) : 0;
+    real u = r/dmp;
+    real au3 = fabs(dmp) > 1.0e-5f ? a*u*u*u : 0;
+    real expau3 = fabs(dmp) > 1.0e-5f ? EXP(-au3) : 0;
     real a2u6 = au3*au3;
     real a3u9 = a2u6*au3;
     // Thole damping factors for energies
@@ -336,7 +336,7 @@ __device__ void computeOneInteraction(AtomData& atom1, AtomData& atom2, bool has
     iEIY -= eCoef*(qiUinpI.y*qiUindJ.x + qiUindI.y*qiUinpJ.x);
     iEJY -= eCoef*(qiUinpJ.y*qiUindI.x + qiUindJ.y*qiUinpI.x);
     fIZ += dCoef*(qiUinpI.x*qiUindJ.x + qiUindI.x*qiUinpJ.x);
-    fIZ += dCoef*(qiUinpJ.x*qiUindI.x + qiUindJ.x*qiUinpI.x);
+    fJZ += dCoef*(qiUinpJ.x*qiUindI.x + qiUindJ.x*qiUinpI.x);
     // Uind-Uind terms (m=1)
     eCoef = 2*rInvVec[3]*thole_d1;
     dCoef = -3*rInvVec[4]*dthole_d1;
@@ -345,7 +345,7 @@ __device__ void computeOneInteraction(AtomData& atom1, AtomData& atom2, bool has
     iEIY += eCoef*(qiUinpI.x*qiUindJ.y + qiUindI.x*qiUinpJ.y);
     iEJY += eCoef*(qiUinpJ.x*qiUindI.y + qiUindJ.x*qiUinpI.y);
     fIZ += dCoef*(qiUinpI.y*qiUindJ.y + qiUindI.y*qiUinpJ.y + qiUinpI.z*qiUindJ.z + qiUindI.z*qiUinpJ.z);
-    fIZ += dCoef*(qiUinpJ.y*qiUindI.y + qiUindJ.y*qiUinpI.y + qiUinpJ.z*qiUindI.z + qiUindJ.z*qiUinpI.z);
+    fJZ += dCoef*(qiUinpJ.y*qiUindI.y + qiUindJ.y*qiUinpI.y + qiUinpJ.z*qiUindI.z + qiUindJ.z*qiUinpI.z);
 #endif
 
     // The quasi-internal frame forces and torques.  Note that the induced torque intermediates are
@@ -488,6 +488,8 @@ extern "C" __global__ void computeElectrostatics(
 
 #ifdef USE_CUTOFF
     const unsigned int numTiles = interactionCount[0];
+    if (numTiles > maxTiles)
+        return; // There wasn't enough memory for the neighbor list.
     int pos = (int) (numTiles > maxTiles ? startTileIndex+warp*(long long)numTileIndices/totalWarps : warp*(long long)numTiles/totalWarps);
     int end = (int) (numTiles > maxTiles ? startTileIndex+(warp+1)*(long long)numTileIndices/totalWarps : (warp+1)*(long long)numTiles/totalWarps);
 #else
@@ -508,34 +510,31 @@ extern "C" __global__ void computeElectrostatics(
         
         int x, y;
 #ifdef USE_CUTOFF
-        if (numTiles <= maxTiles)
-            x = tiles[pos];
-        else
-#endif
-        {
-            y = (int) floor(NUM_BLOCKS+0.5f-SQRT((NUM_BLOCKS+0.5f)*(NUM_BLOCKS+0.5f)-2*pos));
+        x = tiles[pos];
+#else
+        y = (int) floor(NUM_BLOCKS+0.5f-SQRT((NUM_BLOCKS+0.5f)*(NUM_BLOCKS+0.5f)-2*pos));
+        x = (pos-y*NUM_BLOCKS+y*(y+1)/2);
+        if (x < y || x >= NUM_BLOCKS) { // Occasionally happens due to roundoff error.
+            y += (x < y ? -1 : 1);
             x = (pos-y*NUM_BLOCKS+y*(y+1)/2);
-            if (x < y || x >= NUM_BLOCKS) { // Occasionally happens due to roundoff error.
-                y += (x < y ? -1 : 1);
-                x = (pos-y*NUM_BLOCKS+y*(y+1)/2);
-            }
-
-            // Skip over tiles that have exclusions, since they were already processed.
-
-            while (skipTiles[tbx+TILE_SIZE-1] < pos) {
-                if (skipBase+tgx < NUM_TILES_WITH_EXCLUSIONS) {
-                    ushort2 tile = exclusionTiles[skipBase+tgx];
-                    skipTiles[threadIdx.x] = tile.x + tile.y*NUM_BLOCKS - tile.y*(tile.y+1)/2;
-                }
-                else
-                    skipTiles[threadIdx.x] = end;
-                skipBase += TILE_SIZE;            
-                currentSkipIndex = tbx;
-            }
-            while (skipTiles[currentSkipIndex] < pos)
-                currentSkipIndex++;
-            includeTile = (skipTiles[currentSkipIndex] != pos);
         }
+
+        // Skip over tiles that have exclusions, since they were already processed.
+
+        while (skipTiles[tbx+TILE_SIZE-1] < pos) {
+            if (skipBase+tgx < NUM_TILES_WITH_EXCLUSIONS) {
+                ushort2 tile = exclusionTiles[skipBase+tgx];
+                skipTiles[threadIdx.x] = tile.x + tile.y*NUM_BLOCKS - tile.y*(tile.y+1)/2;
+            }
+            else
+                skipTiles[threadIdx.x] = end;
+            skipBase += TILE_SIZE;            
+            currentSkipIndex = tbx;
+        }
+        while (skipTiles[currentSkipIndex] < pos)
+            currentSkipIndex++;
+        includeTile = (skipTiles[currentSkipIndex] != pos);
+#endif
         if (includeTile) {
             unsigned int atom1 = x*TILE_SIZE + tgx;
 
@@ -546,7 +545,7 @@ extern "C" __global__ void computeElectrostatics(
             data.force = make_real3(0);
             data.torque = make_real3(0);
 #ifdef USE_CUTOFF
-            unsigned int j = (numTiles <= maxTiles ? interactingAtoms[pos*TILE_SIZE+tgx] : y*TILE_SIZE + tgx);
+            unsigned int j = interactingAtoms[pos*TILE_SIZE+tgx];
 #else
             unsigned int j = y*TILE_SIZE + tgx;
 #endif

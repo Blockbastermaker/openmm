@@ -21,12 +21,14 @@ class TestAmberPrmtopFile(unittest.TestCase):
     """Test the AmberPrmtopFile.createSystem() method."""
 
     def test_NonbondedMethod(self):
-        """Test all five options for the nonbondedMethod parameter."""
+        """Test all six options for the nonbondedMethod parameter."""
 
         methodMap = {NoCutoff:NonbondedForce.NoCutoff,
                      CutoffNonPeriodic:NonbondedForce.CutoffNonPeriodic,
                      CutoffPeriodic:NonbondedForce.CutoffPeriodic,
-                     Ewald:NonbondedForce.Ewald, PME: NonbondedForce.PME}
+                     Ewald:NonbondedForce.Ewald,
+                     PME:NonbondedForce.PME,
+                     LJPME:NonbondedForce.LJPME}
         for method in methodMap:
             system = prmtop1.createSystem(nonbondedMethod=method)
             forces = system.getForces()
@@ -37,7 +39,7 @@ class TestAmberPrmtopFile(unittest.TestCase):
     def test_Cutoff(self):
         """Test to make sure the nonbondedCutoff parameter is passed correctly."""
 
-        for method in [CutoffNonPeriodic, CutoffPeriodic, Ewald, PME]:
+        for method in [CutoffNonPeriodic, CutoffPeriodic, Ewald, PME, LJPME]:
             system = prmtop1.createSystem(nonbondedMethod=method,
                                           nonbondedCutoff=2*nanometer,
                                           constraints=HBonds)
@@ -51,7 +53,7 @@ class TestAmberPrmtopFile(unittest.TestCase):
     def test_EwaldErrorTolerance(self):
         """Test to make sure the ewaldErrorTolerance parameter is passed correctly."""
 
-        for method in [Ewald, PME]:
+        for method in [Ewald, PME, LJPME]:
             system = prmtop1.createSystem(nonbondedMethod=method,
                                           ewaldErrorTolerance=1e-6,
                                           constraints=HBonds)
@@ -86,8 +88,8 @@ class TestAmberPrmtopFile(unittest.TestCase):
         parameter.
 
         """
-        for implicitSolvent_value in [HCT, OBC1, OBC2, GBn]:
-            system = prmtop2.createSystem(implicitSolvent=implicitSolvent_value)
+        for implicitSolvent_value, gbsa in zip([HCT, OBC1, OBC2, GBn], ['ACE', None, 'ACE', None]):
+            system = prmtop2.createSystem(implicitSolvent=implicitSolvent_value, gbsaModel=gbsa)
             forces = system.getForces()
             if implicitSolvent_value in set([HCT, OBC1, GBn]):
                 force_type = CustomGBForce
@@ -360,6 +362,18 @@ class TestAmberPrmtopFile(unittest.TestCase):
         except TypeError as e:
             # Make sure it says something about chamber
             self.assertTrue('chamber' in str(e).lower())
+
+    def testGBneckRadii(self):
+        """ Tests that GBneck radii limits are correctly enforced """
+        from simtk.openmm.app.internal.customgbforces import GBSAGBnForce
+        f = GBSAGBnForce()
+        # Make sure legal parameters do not raise
+        f.addParticle([0, 0.1, 0.5])
+        f.addParticle([0, 0.2, 0.5])
+        f.addParticle([0, 0.15, 0.5])
+        # Now make sure that out-of-range parameters *do* raise
+        self.assertRaises(ValueError, lambda: f.addParticle([0, 0.9, 0.5]))
+        self.assertRaises(ValueError, lambda: f.addParticle([0, 0.21, 0.5]))
 
 if __name__ == '__main__':
     unittest.main()

@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2015 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -174,8 +174,8 @@ void CudaExpressionUtilities::processExpression(stringstream& out, const Express
                     out << "if (x >= " << paramsFloat[2] << " && x <= " << paramsFloat[3] << " && y >= " << paramsFloat[4] << " && y <= " << paramsFloat[5] << ") {\n";
                     out << "x = (x - " << paramsFloat[2] << ")*" << paramsFloat[6] << ";\n";
                     out << "y = (y - " << paramsFloat[4] << ")*" << paramsFloat[7] << ";\n";
-                    out << "int s = min((int) floor(x), " << paramsInt[0] << ");\n";
-                    out << "int t = min((int) floor(y), " << paramsInt[1] << ");\n";
+                    out << "int s = min((int) floor(x), " << paramsInt[0] << "-1);\n";
+                    out << "int t = min((int) floor(y), " << paramsInt[1] << "-1);\n";
                     out << "int coeffIndex = 4*(s+" << paramsInt[0] << "*t);\n";
                     out << "float4 c[4];\n";
                     for (int j = 0; j < 4; j++)
@@ -217,9 +217,9 @@ void CudaExpressionUtilities::processExpression(stringstream& out, const Express
                     out << "x = (x - " << paramsFloat[3] << ")*" << paramsFloat[9] << ";\n";
                     out << "y = (y - " << paramsFloat[5] << ")*" << paramsFloat[10] << ";\n";
                     out << "z = (z - " << paramsFloat[7] << ")*" << paramsFloat[11] << ";\n";
-                    out << "int s = min((int) floor(x), " << paramsInt[0] << ");\n";
-                    out << "int t = min((int) floor(y), " << paramsInt[1] << ");\n";
-                    out << "int u = min((int) floor(z), " << paramsInt[2] << ");\n";
+                    out << "int s = min((int) floor(x), " << paramsInt[0] << "-1);\n";
+                    out << "int t = min((int) floor(y), " << paramsInt[1] << "-1);\n";
+                    out << "int u = min((int) floor(z), " << paramsInt[2] << "-1);\n";
                     out << "int coeffIndex = 16*(s+" << paramsInt[0] << "*(t+" << paramsInt[1] << "*u));\n";
                     out << "float4 c[16];\n";
                     for (int j = 0; j < 16; j++)
@@ -254,7 +254,7 @@ void CudaExpressionUtilities::processExpression(stringstream& out, const Express
                             for (int k = 3; k >= 0; k--)
                                 for (int m = 0; m < 4; m++) {
                                     int base = 4*m;
-                                    string suffix = suffixes[m];
+                                    string suffix = suffixes[k];
                                     out << "derivy[" << m << "] = da*derivy[" << m << "] + (3*c[" << (base+3) << "]" << suffix << "*db + 2*c[" << (base+2) << "]" << suffix << ")*db + c[" << (base+1) << "]" << suffix << ";\n";
                                 }
                             out << nodeNames[j] << " = derivy[0] + dc*(derivy[1] + dc*(derivy[2] + dc*derivy[3]));\n";
@@ -271,7 +271,7 @@ void CudaExpressionUtilities::processExpression(stringstream& out, const Express
                             out << nodeNames[j] << " *= " << paramsFloat[11] << ";\n";
                         }
                         else
-                            throw OpenMMException("Unsupported derivative order for Continuous2DFunction");
+                            throw OpenMMException("Unsupported derivative order for Continuous3DFunction");
                     }
                     out << "}\n";
                 }
@@ -456,12 +456,12 @@ void CudaExpressionUtilities::processExpression(stringstream& out, const Express
                 vector<bool> hasAssigned(powers.size(), false);
                 exponents.push_back((int) fabs(exponent));
                 names.push_back(name);
-                for (map<int, const ExpressionTreeNode*>::const_iterator iter = powers.begin(); iter != powers.end(); ++iter) {
-                    if (iter->first != exponent) {
-                        exponents.push_back(iter->first >= 0 ? iter->first : -iter->first);
+                for (auto& power : powers) {
+                    if (power.first != exponent) {
+                        exponents.push_back(power.first >= 0 ? power.first : -power.first);
                         string name2 = prefix+context.intToString(temps.size());
                         names.push_back(name2);
-                        temps.push_back(make_pair(*iter->second, name2));
+                        temps.push_back(make_pair(*power.second, name2));
                         out << tempType << " " << name2 << " = 0.0f;\n";
                     }
                 }

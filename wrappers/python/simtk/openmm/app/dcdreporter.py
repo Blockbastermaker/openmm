@@ -42,7 +42,7 @@ class DCDReporter(object):
     To use it, create a DCDReporter, then add it to the Simulation's list of reporters.
     """
 
-    def __init__(self, file, reportInterval):
+    def __init__(self, file, reportInterval, append=False):
         """Create a DCDReporter.
 
         Parameters
@@ -51,9 +51,16 @@ class DCDReporter(object):
             The file to write to
         reportInterval : int
             The interval (in time steps) at which to write frames
+        append : bool=False
+            If True, open an existing DCD file to append to.  If False, create a new file.
         """
         self._reportInterval = reportInterval
-        self._out = open(file, 'wb')
+        self._append = append
+        if append:
+            mode = 'a+b'
+        else:
+            mode = 'wb'
+        self._out = open(file, mode)
         self._dcd = None
 
     def describeNextReport(self, simulation):
@@ -87,9 +94,8 @@ class DCDReporter(object):
         """
 
         if self._dcd is None:
-            self._dcd = DCDFile(self._out, simulation.topology, simulation.integrator.getStepSize(), 0, self._reportInterval)
-        a,b,c = state.getPeriodicBoxVectors()
-        self._dcd.writeModel(state.getPositions(), mm.Vec3(a[0].value_in_unit(nanometer), b[1].value_in_unit(nanometer), c[2].value_in_unit(nanometer))*nanometer)
+            self._dcd = DCDFile(self._out, simulation.topology, simulation.integrator.getStepSize(), 0, self._reportInterval, self._append)
+        self._dcd.writeModel(state.getPositions(), periodicBoxVectors=state.getPeriodicBoxVectors())
 
     def __del__(self):
         self._out.close()

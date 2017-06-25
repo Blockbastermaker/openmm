@@ -26,7 +26,7 @@ sys.path.append(os.path.abspath('../sphinx'))
 
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ['sphinx.ext.pngmath', 'sphinx.ext.mathjax', 'sphinxcontrib.bibtex', 'autonumber', 'samepage', 'caption', 'numsec']
+extensions = ['sphinx.ext.mathjax', 'sphinxcontrib.bibtex', 'autonumber', 'samepage', 'caption', 'numsec']
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -185,10 +185,16 @@ latex_elements = {
     \\usepackage{caption}
     \\setcounter{tocdepth}{3}
     \\captionsetup[figure]{labelformat=empty}
+    % Backwards compatibility for sphinx < 1.5
+    \\let\\DUspan\\null % force DUspan to be defined
     \\renewcommand{\DUspan}[2]{%
         \\IfEqCase{#1}{%
-            {code}{\\small{}\\texttt{#2}\\normalsize{}}%
+            {code}{\\small{}\\texttt{#2}\\normalsize{}}
         }[\\PackageError{DUspan}{Unrecognized option passed to DUspan: #1}{}]%
+    }%
+    % Sphinx > 1.5 compatibility (github.com/sphinx-doc/sphinx/issues/2231)
+    \\newcommand{\\DUrolecode}[1]{%
+        \\small{}\\texttt{#1}\\normalsize{}%
     }%""",
 
 # Omit the index.

@@ -62,6 +62,14 @@ extern "C" OPENMM_EXPORT_CUDA void registerPlatforms() {
 #endif
 
 CudaPlatform::CudaPlatform() {
+    deprecatedPropertyReplacements["CudaDeviceIndex"] = CudaDeviceIndex();
+    deprecatedPropertyReplacements["CudaDeviceName"] = CudaDeviceName();
+    deprecatedPropertyReplacements["CudaUseBlockingSync"] = CudaUseBlockingSync();
+    deprecatedPropertyReplacements["CudaPrecision"] = CudaPrecision();
+    deprecatedPropertyReplacements["CudaUseCpuPme"] = CudaUseCpuPme();
+    deprecatedPropertyReplacements["CudaTempDirectory"] = CudaTempDirectory();
+    deprecatedPropertyReplacements["CudaDisablePmeStream"] = CudaDisablePmeStream();
+    deprecatedPropertyReplacements["CudaDeterministicForces"] = CudaDeterministicForces();
     CudaKernelFactory* factory = new CudaKernelFactory();
     registerKernelFactory(CalcForcesAndEnergyKernel::Name(), factory);
     registerKernelFactory(UpdateStateDataKernel::Name(), factory);
@@ -84,6 +92,7 @@ CudaPlatform::CudaPlatform() {
     registerKernelFactory(CalcCustomCentroidBondForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomCompoundBondForceKernel::Name(), factory);
     registerKernelFactory(CalcCustomManyParticleForceKernel::Name(), factory);
+    registerKernelFactory(CalcGayBerneForceKernel::Name(), factory);
     registerKernelFactory(IntegrateVerletStepKernel::Name(), factory);
     registerKernelFactory(IntegrateLangevinStepKernel::Name(), factory);
     registerKernelFactory(IntegrateBrownianStepKernel::Name(), factory);
@@ -144,7 +153,10 @@ bool CudaPlatform::supportsDoublePrecision() const {
 const string& CudaPlatform::getPropertyValue(const Context& context, const string& property) const {
     const ContextImpl& impl = getContextImpl(context);
     const PlatformData* data = reinterpret_cast<const PlatformData*>(impl.getPlatformData());
-    map<string, string>::const_iterator value = data->propertyValues.find(property);
+    string propertyName = property;
+    if (deprecatedPropertyReplacements.find(property) != deprecatedPropertyReplacements.end())
+        propertyName = deprecatedPropertyReplacements.find(property)->second;
+    map<string, string>::const_iterator value = data->propertyValues.find(propertyName);
     if (value != data->propertyValues.end())
         return value->second;
     return Platform::getPropertyValue(context, property);
@@ -235,6 +247,10 @@ CudaPlatform::PlatformData::PlatformData(ContextImpl* context, const System& sys
         CHECK_RESULT(cuDeviceGetName(name, 1000, contexts[i]->getDevice()), "Error querying device name");
         deviceName << name;
     }
+    size_t printfsize;
+    cuCtxGetLimit(&printfsize, CU_LIMIT_PRINTF_FIFO_SIZE);
+    cuCtxSetLimit(CU_LIMIT_PRINTF_FIFO_SIZE, 10*printfsize);
+
     useCpuPme = (cpuPmeProperty == "true" && !contexts[0]->getUseDoublePrecision());
     disablePmeStream = (pmeStreamProperty == "true");
     deterministicForces = (deterministicForcesProperty == "true");

@@ -1,5 +1,5 @@
 
-/* Portions copyright (c) 2011-2015 Stanford University and Simbios.
+/* Portions copyright (c) 2011-2017 Stanford University and Simbios.
  * Contributors: Peter Eastman
  *
  * Permission is hereby granted, free of charge, to any person obtaining
@@ -25,6 +25,7 @@
 #include "SimTKOpenMMUtilities.h"
 #include "ReferenceVirtualSites.h"
 #include "ReferenceCustomDynamics.h"
+#include "ReferenceTabulatedFunction.h"
 #include "openmm/OpenMMException.h"
 #include "openmm/internal/ContextImpl.h"
 #include "openmm/internal/ForceImpl.h"
@@ -36,6 +37,28 @@
 
 using namespace std;
 using namespace OpenMM;
+using namespace Lepton;
+
+class ReferenceCustomDynamics::DerivFunction : public CustomFunction {
+public:
+    DerivFunction(map<string, double>& energyParamDerivs, const string& param) : energyParamDerivs(energyParamDerivs), param(param) {
+    }
+    int getNumArguments() const {
+        return 0;
+    }
+    double evaluate(const double* arguments) const {
+        return energyParamDerivs[param];
+    }
+    double evaluateDerivative(const double* arguments, const int* derivOrder) const {
+        return 0;
+    }
+    CustomFunction* clone() const {
+        return new DerivFunction(energyParamDerivs, param);
+    }
+private:
+    map<string, double>& energyParamDerivs;
+    string param;
+};
 
 /**---------------------------------------------------------------------------------------
 
@@ -56,13 +79,6 @@ ReferenceCustomDynamics::ReferenceCustomDynamics(int numberOfAtoms, const Custom
         string expression;
         integrator.getComputationStep(i, stepType[i], stepVariable[i], expression);
     }
-    kineticEnergyExpression = Lepton::Parser::parse(integrator.getKineticEnergyExpression()).optimize().createProgram();
-    kineticEnergyNeedsForce = false;
-    for (int i = 0; i < kineticEnergyExpression.getNumOperations(); i++) {
-        const Lepton::Operation& op = kineticEnergyExpression.getOperation(i);
-        if (op.getId() == Lepton::Operation::VARIABLE && op.getName() == "f")
-            kineticEnergyNeedsForce = true;
-    }
 }
 
 /**---------------------------------------------------------------------------------------
@@ -72,6 +88,109 @@ ReferenceCustomDynamics::ReferenceCustomDynamics(int numberOfAtoms, const Custom
    --------------------------------------------------------------------------------------- */
 
 ReferenceCustomDynamics::~ReferenceCustomDynamics() {
+}
+
+void ReferenceCustomDynamics::initialize(ContextImpl& context, vector<double>& masses, map<string, double>& globals) {
+    // Some initialization can't be done in the constructor, since we need a ContextImpl from which to get the list of
+    // Context parameters.  Instead, we do it the first time update() or computeKineticEnergy() is called.
+
+    std::map<std::string, double*> variableLocations;
+    variableLocations["x"] = &x;
+    variableLocations["v"] = &v;
+    variableLocations["m"] = &m;
+    variableLocations["f"] = &f;
+    variableLocations["energy"] = &energy;
+    variableLocations["gaussian"] = &gaussian;
+    variableLocations["uniform"] = &uniform;
+    perDofVariable.resize(integrator.getNumPerDofVariables());
+    for (int i = 0; i < integrator.getNumPerDofVariables(); i++)
+        variableLocations[integrator.getPerDofVariableName(i)] = &perDofVariable[i];
+    for (int i = 0; i < 32; i++) {
+        stringstream fname;
+        fname << "f" << i;
+        variableLocations[fname.str()] = &f;
+        stringstream ename;
+        ename << "energy" << i;
+        variableLocations[ename.str()] = &energy;
+    }
+    
+    // Create custom functions for the tabulated functions.
+
+    map<string, Lepton::CustomFunction*> functions;
+    for (int i = 0; i < integrator.getNumTabulatedFunctions(); i++)
+        functions[integrator.getTabulatedFunctionName(i)] = createReferenceTabulatedFunction(integrator.getTabulatedFunction(i));
+    
+    // Parse the expressions.
+    
+    int numSteps = stepType.size();
+    vector<int> forceGroup;
+    vector<vector<ParsedExpression> > expressions;
+    CustomIntegratorUtilities::analyzeComputations(context, integrator, expressions, comparisons, blockEnd, invalidatesForces, needsForces, needsEnergy, computeBothForceAndEnergy, forceGroup, functions);
+    stepExpressions.resize(expressions.size());
+    for (int i = 0; i < numSteps; i++) {
+        stepExpressions[i].resize(expressions[i].size());
+        for (int j = 0; j < (int) expressions[i].size(); j++) {
+            stepExpressions[i][j] = ParsedExpression(replaceDerivFunctions(expressions[i][j].getRootNode(), context)).createCompiledExpression();
+            stepExpressions[i][j].setVariableLocations(variableLocations);
+            expressionSet.registerExpression(stepExpressions[i][j]);
+        }
+        if (stepType[i] == CustomIntegrator::WhileBlockStart)
+            blockEnd[blockEnd[i]] = i; // Record where to branch back to.
+    }
+    kineticEnergyExpression = Parser::parse(integrator.getKineticEnergyExpression()).optimize().createCompiledExpression();
+    kineticEnergyExpression.setVariableLocations(variableLocations);
+    expressionSet.registerExpression(kineticEnergyExpression);
+    kineticEnergyNeedsForce = false;
+    if (kineticEnergyExpression.getVariables().find("f") != kineticEnergyExpression.getVariables().end())
+        kineticEnergyNeedsForce = true;
+
+    // Delete the custom functions.
+
+    for (auto& function : functions)
+        delete function.second;
+
+    // Record the force group flags for each step.
+
+    forceGroupFlags.resize(numSteps, -1);
+    for (int i = 0; i < numSteps; i++)
+        if (forceGroup[i] > -1)
+            forceGroupFlags[i] = 1<<forceGroup[i];
+
+    // Build the list of inverse masses.
+
+    int numberOfAtoms = masses.size();
+    inverseMasses.resize(numberOfAtoms);
+    for (int i = 0; i < numberOfAtoms; i++) {
+        if (masses[i] == 0.0)
+            inverseMasses[i] = 0.0;
+        else
+            inverseMasses[i] = 1.0/masses[i];
+    }
+
+    // Record indices of variables.
+
+    xIndex = expressionSet.getVariableIndex("x");
+    vIndex = expressionSet.getVariableIndex("v");
+    for (int i = 0; i < integrator.getNumPerDofVariables(); i++)
+        perDofVariableIndex.push_back(expressionSet.getVariableIndex(integrator.getPerDofVariableName(i)));
+    for (int i = 0; i < stepVariable.size(); i++)
+        stepVariableIndex.push_back(expressionSet.getVariableIndex(stepVariable[i]));
+}
+
+ExpressionTreeNode ReferenceCustomDynamics::replaceDerivFunctions(const ExpressionTreeNode& node, ContextImpl& context) {
+    const Operation& op = node.getOperation();
+    if (op.getId() == Operation::CUSTOM && op.getName() == "deriv") {
+        string param = node.getChildren()[1].getOperation().getName();
+        if (context.getParameters().find(param) == context.getParameters().end())
+            throw OpenMMException("The second argument to deriv() must be a context parameter");
+        return ExpressionTreeNode(new Operation::Custom("deriv", new DerivFunction(energyParamDerivs, param)));
+    }
+    else {
+        vector<ExpressionTreeNode> children;
+        for (auto& child : node.getChildren())
+            children.push_back(replaceDerivFunctions(child, context));
+        return ExpressionTreeNode(op.clone(), children);
+    }
 }
 
 /**---------------------------------------------------------------------------------------
@@ -90,112 +209,79 @@ ReferenceCustomDynamics::~ReferenceCustomDynamics() {
 
    --------------------------------------------------------------------------------------- */
 
-void ReferenceCustomDynamics::update(ContextImpl& context, int numberOfAtoms, vector<RealVec>& atomCoordinates,
-                                     vector<RealVec>& velocities, vector<RealVec>& forces, vector<RealOpenMM>& masses,
-                                     map<string, RealOpenMM>& globals, vector<vector<RealVec> >& perDof, bool& forcesAreValid, RealOpenMM tolerance) {
+void ReferenceCustomDynamics::update(ContextImpl& context, int numberOfAtoms, vector<Vec3>& atomCoordinates,
+                                     vector<Vec3>& velocities, vector<Vec3>& forces, vector<double>& masses,
+                                     map<string, double>& globals, vector<vector<Vec3> >& perDof, bool& forcesAreValid, double tolerance) {
+    if (invalidatesForces.size() == 0)
+        initialize(context, masses, globals);
     int numSteps = stepType.size();
     globals.insert(context.getParameters().begin(), context.getParameters().end());
+    for (auto& global : globals)
+        expressionSet.setVariable(expressionSet.getVariableIndex(global.first), global.second);
     oldPos = atomCoordinates;
-    if (invalidatesForces.size() == 0) {
-        // Some initialization can't be done in the constructor, since we need a ContextImpl from which to get the list of
-        // Context parameters.  Instead, we do it the first time this method is called.
-
-        vector<int> forceGroup;
-        vector<vector<Lepton::ParsedExpression> > expressions;
-        CustomIntegratorUtilities::analyzeComputations(context, integrator, expressions, comparisons, blockEnd, invalidatesForces, needsForces, needsEnergy, computeBothForceAndEnergy, forceGroup);
-        stepExpressions.resize(expressions.size());
-        for (int i = 0; i < numSteps; i++) {
-            for (int j = 0; j < (int) expressions[i].size(); j++)
-                stepExpressions[i].push_back(expressions[i][j].createProgram());
-            if (stepType[i] == CustomIntegrator::WhileBlockStart)
-                blockEnd[blockEnd[i]] = i; // Record where to branch back to.
-        }
-
-        // Record the variable names and flags for the force and energy in each step.
-
-        forceGroupFlags.resize(numSteps, -1);
-        forceName.resize(numSteps, "f");
-        energyName.resize(numSteps, "energy");
-        vector<string> forceGroupName;
-        vector<string> energyGroupName;
-        for (int i = 0; i < 32; i++) {
-            stringstream fname;
-            fname << "f" << i;
-            forceGroupName.push_back(fname.str());
-            stringstream ename;
-            ename << "energy" << i;
-            energyGroupName.push_back(ename.str());
-        }
-        for (int i = 0; i < numSteps; i++) {
-            if (needsForces[i] && forceGroup[i] > -1)
-                forceName[i] = forceGroupName[forceGroup[i]];
-            if (needsEnergy[i] && forceGroup[i] > -1)
-                energyName[i] = energyGroupName[forceGroup[i]];
-            if (forceGroup[i] > -1)
-                forceGroupFlags[i] = 1<<forceGroup[i];
-        }
-        
-        // Build the list of inverse masses.
-        
-        inverseMasses.resize(numberOfAtoms);
-        for (int i = 0; i < numberOfAtoms; i++) {
-            if (masses[i] == 0.0)
-                inverseMasses[i] = 0.0;
-            else
-                inverseMasses[i] = 1.0/masses[i];
-        }
-    }
+    map<int, double> groupEnergy;
+    map<int, vector<Vec3> > groupForces;
+    if (forcesAreValid)
+        groupForces[context.getLastForceGroups()] = forces;
     
     // Loop over steps and execute them.
     
     for (int step = 0; step < numSteps; ) {
-        if ((needsForces[step] || needsEnergy[step]) && (!forcesAreValid || context.getLastForceGroups() != forceGroupFlags[step])) {
+        int flags = forceGroupFlags[step];
+        if ((needsForces[step] && groupForces.find(flags) == groupForces.end()) || (needsEnergy[step] && groupEnergy.find(flags) == groupEnergy.end())) {
             // Recompute forces and/or energy.
             
             bool computeForce = needsForces[step] || computeBothForceAndEnergy[step];
             bool computeEnergy = needsEnergy[step] || computeBothForceAndEnergy[step];
             recordChangedParameters(context, globals);
-            RealOpenMM e = context.calcForcesAndEnergy(computeForce, computeEnergy, forceGroupFlags[step]);
-            if (computeEnergy)
-                energy = e;
+            double e = context.calcForcesAndEnergy(computeForce, computeEnergy, forceGroupFlags[step]);
+            if (computeForce)
+                groupForces[flags] = forces;
+            if (computeEnergy) {
+                groupEnergy[flags] = e;
+                context.getEnergyParameterDerivatives(energyParamDerivs);
+            }
             forcesAreValid = true;
         }
-        globals[energyName[step]] = energy;
         
         // Execute the step.
 
+        energy = (needsEnergy[step] ? groupEnergy[flags] : 0);
+        vector<Vec3>& stepForces = (needsForces[step] ? groupForces[flags] : forces);
         int nextStep = step+1;
         switch (stepType[step]) {
             case CustomIntegrator::ComputeGlobal: {
-                map<string, RealOpenMM> variables = globals;
-                variables["uniform"] = SimTKOpenMMUtilities::getUniformlyDistributedRandomNumber();
-                variables["gaussian"] = SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
-                globals[stepVariable[step]] = stepExpressions[step][0].evaluate(variables);
+                uniform = SimTKOpenMMUtilities::getUniformlyDistributedRandomNumber();
+                gaussian = SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
+                double result = stepExpressions[step][0].evaluate();
+                globals[stepVariable[step]] = result;
+                expressionSet.setVariable(stepVariableIndex[step], result);
                 break;
             }
             case CustomIntegrator::ComputePerDof: {
-                vector<RealVec>* results = NULL;
-                if (stepVariable[step] == "x")
+                vector<Vec3>* results = NULL;
+                if (stepVariableIndex[step] == xIndex)
                     results = &atomCoordinates;
-                else if (stepVariable[step] == "v")
+                else if (stepVariableIndex[step] == vIndex)
                     results = &velocities;
                 else {
                     for (int j = 0; j < integrator.getNumPerDofVariables(); j++)
-                        if (stepVariable[step] == integrator.getPerDofVariableName(j))
+                        if (stepVariableIndex[step] == perDofVariableIndex[j])
                             results = &perDof[j];
                 }
                 if (results == NULL)
                     throw OpenMMException("Illegal per-DOF output variable: "+stepVariable[step]);
-                computePerDof(numberOfAtoms, *results, atomCoordinates, velocities, forces, masses, globals, perDof, stepExpressions[step][0], forceName[step]);
+                computePerDof(numberOfAtoms, *results, atomCoordinates, velocities, stepForces, masses, perDof, stepExpressions[step][0]);
                 break;
             }
             case CustomIntegrator::ComputeSum: {
-                computePerDof(numberOfAtoms, sumBuffer, atomCoordinates, velocities, forces, masses, globals, perDof, stepExpressions[step][0], forceName[step]);
-                RealOpenMM sum = 0.0;
+                computePerDof(numberOfAtoms, sumBuffer, atomCoordinates, velocities, stepForces, masses, perDof, stepExpressions[step][0]);
+                double sum = 0.0;
                 for (int j = 0; j < numberOfAtoms; j++)
                     if (masses[j] != 0.0)
                         sum += sumBuffer[j][0]+sumBuffer[j][1]+sumBuffer[j][2];
                 globals[stepVariable[step]] = sum;
+                expressionSet.setVariable(stepVariableIndex[step], sum);
                 break;
             }
             case CustomIntegrator::ConstrainPositions: {
@@ -211,15 +297,17 @@ void ReferenceCustomDynamics::update(ContextImpl& context, int numberOfAtoms, ve
                 recordChangedParameters(context, globals);
                 context.updateContextState();
                 globals.insert(context.getParameters().begin(), context.getParameters().end());
+                for (auto& global : globals)
+                    expressionSet.setVariable(expressionSet.getVariableIndex(global.first), global.second);
                 break;
             }
             case CustomIntegrator::IfBlockStart: {
-                if (!evaluateCondition(step, globals))
+                if (!evaluateCondition(step))
                     nextStep = blockEnd[step]+1;
                 break;
             }
             case CustomIntegrator::WhileBlockStart: {
-                if (!evaluateCondition(step, globals))
+                if (!evaluateCondition(step))
                     nextStep = blockEnd[step]+1;
                 break;
             }
@@ -229,8 +317,11 @@ void ReferenceCustomDynamics::update(ContextImpl& context, int numberOfAtoms, ve
                 break;
             }
         }
-        if (invalidatesForces[step])
+        if (invalidatesForces[step]) {
             forcesAreValid = false;
+            groupForces.clear();
+            groupEnergy.clear();
+        }
         step = nextStep;
     }
     ReferenceVirtualSites::computePositions(context.getSystem(), atomCoordinates);
@@ -238,38 +329,35 @@ void ReferenceCustomDynamics::update(ContextImpl& context, int numberOfAtoms, ve
     recordChangedParameters(context, globals);
 }
 
-void ReferenceCustomDynamics::computePerDof(int numberOfAtoms, vector<RealVec>& results, const vector<RealVec>& atomCoordinates,
-              const vector<RealVec>& velocities, const vector<RealVec>& forces, const vector<RealOpenMM>& masses,
-              const map<string, RealOpenMM>& globals, const vector<vector<RealVec> >& perDof,
-              const Lepton::ExpressionProgram& expression, const std::string& forceName) {
+void ReferenceCustomDynamics::computePerDof(int numberOfAtoms, vector<Vec3>& results, const vector<Vec3>& atomCoordinates,
+              const vector<Vec3>& velocities, const vector<Vec3>& forces, const vector<double>& masses,
+              const vector<vector<Vec3> >& perDof, const CompiledExpression& expression) {
     // Loop over all degrees of freedom.
 
-    map<string, RealOpenMM> variables = globals;
     for (int i = 0; i < numberOfAtoms; i++) {
         if (masses[i] != 0.0) {
-            variables["m"] = masses[i];
+            m = masses[i];
             for (int j = 0; j < 3; j++) {
                 // Compute the expression.
 
-                variables["x"] = atomCoordinates[i][j];
-                variables["v"] = velocities[i][j];
-                variables[forceName] = forces[i][j];
-                variables["uniform"] = SimTKOpenMMUtilities::getUniformlyDistributedRandomNumber();
-                variables["gaussian"] = SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
+                x = atomCoordinates[i][j];
+                v = velocities[i][j];
+                f = forces[i][j];
+                uniform = SimTKOpenMMUtilities::getUniformlyDistributedRandomNumber();
+                gaussian = SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
                 for (int k = 0; k < (int) perDof.size(); k++)
-                    variables[integrator.getPerDofVariableName(k)] = perDof[k][i][j];
-                results[i][j] = expression.evaluate(variables);
+                    perDofVariable[k] = perDof[k][i][j];
+                results[i][j] = expression.evaluate();
             }
         }
     }
 }
 
-bool ReferenceCustomDynamics::evaluateCondition(int step, map<string, RealOpenMM>& globals) {
-    map<string, RealOpenMM> variables = globals;
-    variables["uniform"] = SimTKOpenMMUtilities::getUniformlyDistributedRandomNumber();
-    variables["gaussian"] = SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
-    double lhs = stepExpressions[step][0].evaluate(variables);
-    double rhs = stepExpressions[step][1].evaluate(variables);
+bool ReferenceCustomDynamics::evaluateCondition(int step) {
+    uniform = SimTKOpenMMUtilities::getUniformlyDistributedRandomNumber();
+    gaussian = SimTKOpenMMUtilities::getNormallyDistributedRandomNumber();
+    double lhs = stepExpressions[step][0].evaluate();
+    double rhs = stepExpressions[step][1].evaluate();
     switch (comparisons[step]) {
         case CustomIntegratorUtilities::EQUAL:
             return (lhs == rhs);
@@ -290,11 +378,11 @@ bool ReferenceCustomDynamics::evaluateCondition(int step, map<string, RealOpenMM
 /**
  * Check which context parameters have changed and register them with the context.
  */
-void ReferenceCustomDynamics::recordChangedParameters(OpenMM::ContextImpl& context, std::map<std::string, RealOpenMM>& globals) {
-    for (map<string, double>::const_iterator iter = context.getParameters().begin(); iter != context.getParameters().end(); ++iter) {
-        string name = iter->first;
+void ReferenceCustomDynamics::recordChangedParameters(OpenMM::ContextImpl& context, std::map<std::string, double>& globals) {
+    for (auto& param : context.getParameters()) {
+        string name = param.first;
         double value = globals[name];
-        if (value != iter->second)
+        if (value != param.second)
             context.setParameter(name, globals[name]);
     }
 }
@@ -315,16 +403,20 @@ void ReferenceCustomDynamics::recordChangedParameters(OpenMM::ContextImpl& conte
 
    --------------------------------------------------------------------------------------- */
 
-double ReferenceCustomDynamics::computeKineticEnergy(OpenMM::ContextImpl& context, int numberOfAtoms, std::vector<OpenMM::RealVec>& atomCoordinates,
-        std::vector<OpenMM::RealVec>& velocities, std::vector<OpenMM::RealVec>& forces, std::vector<RealOpenMM>& masses,
-        std::map<std::string, RealOpenMM>& globals, std::vector<std::vector<OpenMM::RealVec> >& perDof, bool& forcesAreValid) {
+double ReferenceCustomDynamics::computeKineticEnergy(OpenMM::ContextImpl& context, int numberOfAtoms, std::vector<OpenMM::Vec3>& atomCoordinates,
+        std::vector<OpenMM::Vec3>& velocities, std::vector<OpenMM::Vec3>& forces, std::vector<double>& masses,
+        std::map<std::string, double>& globals, std::vector<std::vector<OpenMM::Vec3> >& perDof, bool& forcesAreValid) {
+    if (invalidatesForces.size() == 0)
+        initialize(context, masses, globals);
     globals.insert(context.getParameters().begin(), context.getParameters().end());
+    for (auto& global : globals)
+        expressionSet.setVariable(expressionSet.getVariableIndex(global.first), global.second);
     if (kineticEnergyNeedsForce) {
         energy = context.calcForcesAndEnergy(true, true, -1);
         forcesAreValid = true;
     }
-    computePerDof(numberOfAtoms, sumBuffer, atomCoordinates, velocities, forces, masses, globals, perDof, kineticEnergyExpression, "f");
-    RealOpenMM sum = 0.0;
+    computePerDof(numberOfAtoms, sumBuffer, atomCoordinates, velocities, forces, masses, perDof, kineticEnergyExpression);
+    double sum = 0.0;
     for (int j = 0; j < numberOfAtoms; j++)
         if (masses[j] != 0.0)
             sum += sumBuffer[j][0]+sumBuffer[j][1]+sumBuffer[j][2];

@@ -328,6 +328,13 @@ public:
      * @return the potential energy due to the force
      */
     double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
+     /**
+     * Get the LabFrame dipole moments of all particles.
+     * 
+     * @param context    the Context for which to get the induced dipoles
+     * @param dipoles    the induced dipole moment of particle i is stored into the i'th element
+     */
+    void getLabFramePermanentDipoles(ContextImpl& context, std::vector<Vec3>& dipoles);
     /**
      * Get the induced dipole moments of all particles.
      * 
@@ -335,6 +342,13 @@ public:
      * @param dipoles    the induced dipole moment of particle i is stored into the i'th element
      */
     void getInducedDipoles(ContextImpl& context, std::vector<Vec3>& dipoles);
+    /**
+     * Get the total dipole moments of all particles.
+     * 
+     * @param context    the Context for which to get the induced dipoles
+     * @param dipoles    the induced dipole moment of particle i is stored into the i'th element
+     */
+    void getTotalDipoles(ContextImpl& context, std::vector<Vec3>& dipoles);
     /**
      * Execute the kernel to calculate the electrostatic potential
      *
@@ -394,7 +408,7 @@ private:
     int fixedFieldThreads, inducedFieldThreads, electrostaticsThreads;
     int gridSizeX, gridSizeY, gridSizeZ;
     double alpha, inducedEpsilon;
-    bool usePME, hasQuadrupoles, hasInitializedScaleFactors, hasInitializedFFT, multipolesAreValid;
+    bool usePME, hasQuadrupoles, hasInitializedScaleFactors, hasInitializedFFT, multipolesAreValid, hasCreatedEvent;
     AmoebaMultipoleForce::PolarizationType polarizationType;
     CudaContext& cu;
     const System& system;
@@ -451,16 +465,16 @@ private:
     CudaArray* pmePhidp;
     CudaArray* pmeCphi;
     CudaArray* pmeAtomRange;
-    CudaArray* pmeAtomGridIndex;
     CudaArray* lastPositions;
     CudaSort* sort;
     cufftHandle fft;
     CUfunction computeMomentsKernel, recordInducedDipolesKernel, computeFixedFieldKernel, computeInducedFieldKernel, updateInducedFieldKernel, electrostaticsKernel, mapTorqueKernel;
-    CUfunction pmeGridIndexKernel, pmeSpreadFixedMultipolesKernel, pmeSpreadInducedDipolesKernel, pmeFinishSpreadChargeKernel, pmeConvolutionKernel;
+    CUfunction pmeSpreadFixedMultipolesKernel, pmeSpreadInducedDipolesKernel, pmeFinishSpreadChargeKernel, pmeConvolutionKernel;
     CUfunction pmeFixedPotentialKernel, pmeInducedPotentialKernel, pmeFixedForceKernel, pmeInducedForceKernel, pmeRecordInducedFieldDipolesKernel, computePotentialKernel;
-    CUfunction recordDIISDipolesKernel, buildMatrixKernel;
+    CUfunction recordDIISDipolesKernel, buildMatrixKernel, solveMatrixKernel;
     CUfunction initExtrapolatedKernel, iterateExtrapolatedKernel, computeExtrapolatedKernel, addExtrapolatedGradientKernel;
     CUfunction pmeTransformMultipolesKernel, pmeTransformPotentialKernel;
+    CUevent syncEvent;
     CudaCalcAmoebaGeneralizedKirkwoodForceKernel* gkKernel;
     static const int PmeOrder = 5;
     static const int MaxPrevDIISDipoles = 20;

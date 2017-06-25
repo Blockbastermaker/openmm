@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2015 Stanford University and the Authors.           *
+ * Portions copyright (c) 2015-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -34,8 +34,10 @@
 #include "openmm/internal/ForceImpl.h"
 #include "lepton/Operation.h"
 #include "lepton/Parser.h"
+#include <algorithm>
 #include <set>
 #include <sstream>
+#include <utility>
 
 using namespace OpenMM;
 using namespace std;
@@ -58,8 +60,8 @@ bool CustomIntegratorUtilities::usesVariable(const Lepton::ExpressionTreeNode& n
     const Lepton::Operation& op = node.getOperation();
     if (op.getId() == Lepton::Operation::VARIABLE && op.getName() == variable)
         return true;
-    for (int i = 0; i < (int) node.getChildren().size(); i++)
-        if (usesVariable(node.getChildren()[i], variable))
+    for (auto& child : node.getChildren())
+        if (usesVariable(child, variable))
             return true;
     return false;
 }
@@ -70,7 +72,7 @@ bool CustomIntegratorUtilities::usesVariable(const Lepton::ParsedExpression& exp
 
 void CustomIntegratorUtilities::analyzeComputations(const ContextImpl& context, const CustomIntegrator& integrator, vector<vector<Lepton::ParsedExpression> >& expressions,
             vector<Comparison>& comparisons, vector<int>& blockEnd, vector<bool>& invalidatesForces, vector<bool>& needsForces, vector<bool>& needsEnergy,
-            vector<bool>& computeBoth, vector<int>& forceGroup) {
+            vector<bool>& computeBoth, vector<int>& forceGroup, const map<string, Lepton::CustomFunction*>& functions) {
     int numSteps = integrator.getNumComputations();
     expressions.resize(numSteps);
     comparisons.resize(numSteps);
@@ -81,6 +83,9 @@ void CustomIntegratorUtilities::analyzeComputations(const ContextImpl& context, 
     forceGroup.resize(numSteps, -2);
     vector<CustomIntegrator::ComputationType> stepType(numSteps);
     vector<string> stepVariable(numSteps);
+    map<string, Lepton::CustomFunction*> customFunctions = functions;
+    DerivFunction derivFunction;
+    customFunctions["deriv"] = &derivFunction;
 
     // Parse the expressions.
 
@@ -92,24 +97,23 @@ void CustomIntegratorUtilities::analyzeComputations(const ContextImpl& context, 
 
             string lhs, rhs;
             parseCondition(expression, lhs, rhs, comparisons[step]);
-            expressions[step].push_back(Lepton::Parser::parse(lhs).optimize());
-            expressions[step].push_back(Lepton::Parser::parse(rhs).optimize());
+            expressions[step].push_back(Lepton::Parser::parse(lhs, customFunctions).optimize());
+            expressions[step].push_back(Lepton::Parser::parse(rhs, customFunctions).optimize());
         }
         else if (expression.size() > 0)
-            expressions[step].push_back(Lepton::Parser::parse(expression).optimize());
+            expressions[step].push_back(Lepton::Parser::parse(expression, customFunctions).optimize());
     }
 
     // Identify which steps invalidate the forces.
 
     set<string> affectsForce;
     affectsForce.insert("x");
-    for (vector<ForceImpl*>::const_iterator iter = context.getForceImpls().begin(); iter != context.getForceImpls().end(); ++iter) {
-        const map<string, double> params = (*iter)->getDefaultParameters();
-        for (map<string, double>::const_iterator param = params.begin(); param != params.end(); ++param)
-            affectsForce.insert(param->first);
-    }
+    for (auto force : context.getForceImpls())
+        for (auto& param : force->getDefaultParameters())
+            affectsForce.insert(param.first);
     for (int i = 0; i < numSteps; i++)
-        invalidatesForces[i] = (stepType[i] == CustomIntegrator::ConstrainPositions || affectsForce.find(stepVariable[i]) != affectsForce.end());
+        invalidatesForces[i] = (stepType[i] == CustomIntegrator::ConstrainPositions || stepType[i] == CustomIntegrator::UpdateContextState ||
+                affectsForce.find(stepVariable[i]) != affectsForce.end());
 
     // Make a list of which steps require valid forces or energy to be known.
 
@@ -191,6 +195,14 @@ void CustomIntegratorUtilities::analyzeComputations(const ContextImpl& context, 
     vector<int> jumps(numSteps, -1);
     vector<int> stepsInPath;
     enumeratePaths(0, stepsInPath, jumps, blockEnd, stepType, needsForces, needsEnergy, invalidatesForces, forceGroup, computeBoth);
+    
+    // Make sure calls to deriv() all valid.
+    
+    vector<string> derivNames = energyGroupName;
+    derivNames.push_back("energy");
+    for (int i = 0; i < expressions.size(); i++)
+        for (int j = 0; j < expressions[i].size(); j++)
+            validateDerivatives(expressions[i][j].getRootNode(), derivNames);
 }
 
 void CustomIntegratorUtilities::enumeratePaths(int firstStep, vector<int> steps, vector<int> jumps, const vector<int>& blockEnd,
@@ -239,29 +251,38 @@ void CustomIntegratorUtilities::enumeratePaths(int firstStep, vector<int> steps,
 
 void CustomIntegratorUtilities::analyzeForceComputationsForPath(vector<int>& steps, const vector<bool>& needsForces, const vector<bool>& needsEnergy,
             const vector<bool>& invalidatesForces, const vector<int>& forceGroup, vector<bool>& computeBoth) {
-    vector<int> candidatePoints;
-    int currentGroup = -1;
-    for (int i = 0; i < (int) steps.size(); i++) {
-        int step = steps[i];
-        if (invalidatesForces[step] || ((needsForces[step] || needsEnergy[step]) && forceGroup[step] != currentGroup)) {
-            // Forces and energies are invalidated at this step, or it changes to a different force group,
-            // so anything from this point on won't affect what we do at earlier steps.
+    vector<pair<int, int> > candidatePoints;
+    for (int step : steps) {
+        if (invalidatesForces[step]) {
+            // Forces and energies are invalidated at this step, so anything from this point on won't affect what we do at earlier steps.
 
             candidatePoints.clear();
         }
         if (needsForces[step] || needsEnergy[step]) {
             // See if this step affects what we do at earlier points.
 
-            for (int j = 0; j < (int) candidatePoints.size(); j++) {
-                int candidate = candidatePoints[j];
-                if ((needsForces[candidate] && needsEnergy[step]) || (needsEnergy[candidate] && needsForces[step]))
-                    computeBoth[candidate] = true;
-            }
+            for (auto candidate : candidatePoints)
+                if (candidate.second == forceGroup[step] && ((needsForces[candidate.first] && needsEnergy[step]) || (needsEnergy[candidate.first] && needsForces[step])))
+                    computeBoth[candidate.first] = true;
 
             // Add this to the list of candidates that might be affected by later steps.
 
-            candidatePoints.push_back(step);
-            currentGroup = forceGroup[step];
+            candidatePoints.push_back(make_pair(step, forceGroup[step]));
         }
+    }
+}
+
+void CustomIntegratorUtilities::validateDerivatives(const Lepton::ExpressionTreeNode& node, const vector<string>& derivNames) {
+    const Lepton::Operation& op = node.getOperation();
+    if (op.getId() == Lepton::Operation::CUSTOM && op.getName() == "deriv") {
+        const Lepton::Operation& child = node.getChildren()[0].getOperation();
+        if (child.getId() != Lepton::Operation::VARIABLE || find(derivNames.begin(), derivNames.end(), child.getName()) == derivNames.end())
+            throw OpenMMException("The first argument to deriv() must be an energy variable");
+        if (node.getChildren()[1].getOperation().getId() != Lepton::Operation::VARIABLE)
+            throw OpenMMException("The second argument to deriv() must be a context parameter");
+    }
+    else {
+        for (int i = 0; i < node.getChildren().size(); i++)
+            validateDerivatives(node.getChildren()[i], derivNames);
     }
 }

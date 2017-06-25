@@ -11,6 +11,7 @@ try:
 except ImportError:
     from io import StringIO
 import os
+import warnings
 
 class TestForceField(unittest.TestCase):
     """Test the ForceField.createSystem() method."""
@@ -32,12 +33,14 @@ class TestForceField(unittest.TestCase):
 
 
     def test_NonbondedMethod(self):
-        """Test all five options for the nonbondedMethod parameter."""
+        """Test all six options for the nonbondedMethod parameter."""
 
         methodMap = {NoCutoff:NonbondedForce.NoCutoff,
                      CutoffNonPeriodic:NonbondedForce.CutoffNonPeriodic,
                      CutoffPeriodic:NonbondedForce.CutoffPeriodic,
-                     Ewald:NonbondedForce.Ewald, PME: NonbondedForce.PME}
+                     Ewald:NonbondedForce.Ewald,
+                     PME:NonbondedForce.PME,
+                     LJPME:NonbondedForce.LJPME}
         for method in methodMap:
             system = self.forcefield1.createSystem(self.pdb1.topology,
                                                   nonbondedMethod=method)
@@ -61,7 +64,7 @@ class TestForceField(unittest.TestCase):
     def test_Cutoff(self):
         """Test to make sure the nonbondedCutoff parameter is passed correctly."""
 
-        for method in [CutoffNonPeriodic, CutoffPeriodic, Ewald, PME]:
+        for method in [CutoffNonPeriodic, CutoffPeriodic, Ewald, PME, LJPME]:
             system = self.forcefield1.createSystem(self.pdb1.topology,
                                                    nonbondedMethod=method,
                                                    nonbondedCutoff=2*nanometer,
@@ -91,6 +94,37 @@ class TestForceField(unittest.TestCase):
                                                        rigidWater=rigidWater_value)
                 validateConstraints(self, topology, system,
                                     constraints_value, rigidWater_value)
+
+    def test_flexibleConstraints(self):
+        """ Test the flexibleConstraints keyword """
+        topology = self.pdb1.topology
+        system1 = self.forcefield1.createSystem(topology, constraints=HAngles,
+                                                rigidWater=True)
+        system2 = self.forcefield1.createSystem(topology, constraints=HAngles,
+                                                rigidWater=True, flexibleConstraints=True)
+        system3 = self.forcefield1.createSystem(topology, constraints=None, rigidWater=False)
+        validateConstraints(self, topology, system1, HAngles, True)
+        # validateConstraints fails for system2 since by definition atom pairs can be in both bond
+        # and constraint lists. So just check that the number of constraints is the same for both
+        # system1 and system2
+        self.assertEqual(system1.getNumConstraints(), system2.getNumConstraints())
+        for force in system1.getForces():
+            if isinstance(force, HarmonicBondForce):
+                bf1 = force
+            elif isinstance(force, HarmonicAngleForce):
+                af1 = force
+        for force in system2.getForces():
+            if isinstance(force, HarmonicBondForce):
+                bf2 = force
+            elif isinstance(force, HarmonicAngleForce):
+                af2 = force
+        for force in system3.getForces():
+            if isinstance(force, HarmonicAngleForce):
+                af3 = force
+        # Make sure we picked up extra bond terms with flexibleConstraints
+        self.assertGreater(bf2.getNumBonds(), bf1.getNumBonds())
+        # Make sure flexibleConstraints yields just as many angles as no constraints
+        self.assertEqual(af2.getNumAngles(), af3.getNumAngles())
 
     def test_ImplicitSolvent(self):
         """Test the four types of implicit solvents using the implicitSolvent
@@ -569,8 +603,8 @@ class TestForceField(unittest.TestCase):
         # confirm charge
         self.assertEqual(sys.getForce(0).getParticleParameters(0)[0]._value, 3.0)
 
-    def test_ResidueOverloading(self):
-        """Test residue overloading via overload tag in the XML"""
+    def test_ResidueOverriding(self):
+        """Test residue overriding via override tag in the XML"""
 
         ffxml1 = """<ForceField>
  <AtomTypes>
@@ -607,7 +641,7 @@ class TestForceField(unittest.TestCase):
   <Type name="Fe2+_tip3p_standard" class="Fe2+_tip3p_standard" element="Fe" mass="55.85"/>
  </AtomTypes>
  <Residues>
-  <Residue name="FE2" overload="1">
+  <Residue name="FE2" override="1">
    <Atom name="FE2" type="Fe2+_tip3p_standard" charge="2.0"/>
   </Residue>
  </Residues>
@@ -625,6 +659,177 @@ class TestForceField(unittest.TestCase):
         self.assertEqual(ff._templates['FE2'].atoms[0].type, 'Fe2+_tip3p_standard')
         ff.createSystem(pdb.topology)
 
+    def test_LennardJonesGenerator(self):
+        """ Test the LennardJones generator"""
+        warnings.filterwarnings('ignore', category=CharmmPSFWarning)
+        psf = CharmmPsfFile('systems/ions.psf')
+        pdb = PDBFile('systems/ions.pdb')
+        params = CharmmParameterSet('systems/toppar_water_ions.str'
+                                    )
+
+        # Box dimensions (found from bounding box)
+        psf.setBox(12.009*angstroms,   12.338*angstroms,   11.510*angstroms)
+
+        # Turn off charges so we only test the Lennard-Jones energies
+        for a in psf.atom_list:
+            a.charge = 0.0
+
+        # Now compute the full energy
+        plat = Platform.getPlatformByName('Reference')
+        system = psf.createSystem(params, nonbondedMethod=PME,
+                                  nonbondedCutoff=5*angstroms)
+
+        con = Context(system, VerletIntegrator(2*femtoseconds), plat)
+        con.setPositions(pdb.positions)
+
+        # Now set up system from ffxml.
+        xml = """
+<ForceField>
+ <AtomTypes>
+  <Type name="SOD" class="SOD" element="Na" mass="22.98977"/>
+  <Type name="CLA" class="CLA" element="Cl" mass="35.45"/>
+ </AtomTypes>
+ <Residues>
+  <Residue name="CLA">
+   <Atom name="CLA" type="CLA"/>
+  </Residue>
+  <Residue name="SOD">
+   <Atom name="SOD" type="SOD"/>
+  </Residue>
+ </Residues>
+ <LennardJonesForce lj14scale="1.0">
+  <Atom type="CLA" sigma="0.404468018036" epsilon="0.6276"/>
+  <Atom type="SOD" sigma="0.251367073323" epsilon="0.1962296"/>
+  <NBFixPair type1="CLA" type2="SOD" sigma="0.33239431" epsilon="0.350933"/>
+ </LennardJonesForce>
+</ForceField> """
+        ff = ForceField(StringIO(xml))
+        system2 = ff.createSystem(pdb.topology, nonbondedMethod=PME,
+                                  nonbondedCutoff=5*angstroms)
+        con2 = Context(system2, VerletIntegrator(2*femtoseconds), plat)
+        con2.setPositions(pdb.positions)
+
+        state = con.getState(getEnergy=True, enforcePeriodicBox=True)
+        ene = state.getPotentialEnergy().value_in_unit(kilocalories_per_mole)
+        state2 = con2.getState(getEnergy=True, enforcePeriodicBox=True)
+        ene2 = state2.getPotentialEnergy().value_in_unit(kilocalories_per_mole)
+        self.assertAlmostEqual(ene, ene2)
+
+    def test_NBFix(self):
+        """Test using LennardJonesGenerator to implement NBFix terms."""
+        # Create a chain of five atoms.
+
+        top = Topology()
+        chain = top.addChain()
+        res = top.addResidue('RES', chain)
+        top.addAtom('A', elem.oxygen, res)
+        top.addAtom('B', elem.carbon, res)
+        top.addAtom('C', elem.carbon, res)
+        top.addAtom('D', elem.carbon, res)
+        top.addAtom('E', elem.nitrogen, res)
+        atoms = list(top.atoms())
+        top.addBond(atoms[0], atoms[1])
+        top.addBond(atoms[1], atoms[2])
+        top.addBond(atoms[2], atoms[3])
+        top.addBond(atoms[3], atoms[4])
+
+        # Create the force field and system.
+
+        xml = """
+<ForceField>
+ <AtomTypes>
+  <Type name="A" class="A" element="O" mass="1"/>
+  <Type name="B" class="B" element="C" mass="1"/>
+  <Type name="C" class="C" element="C" mass="1"/>
+  <Type name="D" class="D" element="C" mass="1"/>
+  <Type name="E" class="E" element="N" mass="1"/>
+ </AtomTypes>
+ <Residues>
+  <Residue name="RES">
+   <Atom name="A" type="A"/>
+   <Atom name="B" type="B"/>
+   <Atom name="C" type="C"/>
+   <Atom name="D" type="D"/>
+   <Atom name="E" type="E"/>
+   <Bond atomName1="A" atomName2="B"/>
+   <Bond atomName1="B" atomName2="C"/>
+   <Bond atomName1="C" atomName2="D"/>
+   <Bond atomName1="D" atomName2="E"/>
+  </Residue>
+ </Residues>
+ <LennardJonesForce lj14scale="0.3">
+  <Atom type="A" sigma="1" epsilon="0.1"/>
+  <Atom type="B" sigma="2" epsilon="0.2"/>
+  <Atom type="C" sigma="3" epsilon="0.3"/>
+  <Atom type="D" sigma="4" epsilon="0.4"/>
+  <Atom type="E" sigma="5" epsilon="0.5"/>
+  <NBFixPair type1="A" type2="D" sigma="2.5" epsilon="1.1"/>
+  <NBFixPair type1="A" type2="E" sigma="3.5" epsilon="1.5"/>
+ </LennardJonesForce>
+</ForceField> """
+        ff = ForceField(StringIO(xml))
+        system = ff.createSystem(top)
+
+        # Check that it produces the correct energy.
+
+        integrator = VerletIntegrator(0.001)
+        context = Context(system, integrator, Platform.getPlatform(0))
+        positions = [Vec3(i, 0, 0) for i in range(5)]*nanometers
+        context.setPositions(positions)
+        def ljEnergy(sigma, epsilon, r):
+            return 4*epsilon*((sigma/r)**12-(sigma/r)**6)
+        expected = 0.3*ljEnergy(2.5, 1.1, 3)  + 0.3*ljEnergy(3.5, sqrt(0.1), 3) + ljEnergy(3.5, 1.5, 4)
+        self.assertAlmostEqual(expected, context.getState(getEnergy=True).getPotentialEnergy().value_in_unit(kilojoules_per_mole))
+
+    def test_IgnoreExternalBonds(self):
+        """Test the ignoreExternalBonds option"""
+
+        modeller = Modeller(self.pdb2.topology, self.pdb2.positions)
+        modeller.delete([next(modeller.topology.residues())])
+        self.assertRaises(Exception, lambda: self.forcefield2.createSystem(modeller.topology))
+        system = self.forcefield2.createSystem(modeller.topology, ignoreExternalBonds=True)
+        templates = self.forcefield2.getMatchingTemplates(modeller.topology, ignoreExternalBonds=True)
+        self.assertEqual(2, len(templates))
+        self.assertEqual('ALA', templates[0].name)
+        self.assertEqual('NME', templates[1].name)
+
+    def test_Includes(self):
+        """Test using a ForceField that includes other files."""
+        forcefield = ForceField(os.path.join('systems', 'ff_with_includes.xml'))
+        self.assertTrue(len(forcefield._atomTypes) > 10)
+        self.assertTrue('spce-O' in forcefield._atomTypes)
+        self.assertTrue('HOH' in forcefield._templates)
+
+    def test_ImpropersOrdering(self):
+        """Test correctness of the ordering of atom indexes in improper torsions
+        and the torsion.ordering parameter.
+        """
+
+        xml = """
+<ForceField>
+ <PeriodicTorsionForce ordering="amber">
+  <Improper class1="C" class2="" class3="O2" class4="O2" periodicity1="2" phase1="3.14159265359" k1="43.932"/>
+ </PeriodicTorsionForce>
+</ForceField>
+"""
+        pdb = PDBFile('systems/impropers_ordering_tetrapeptide.pdb')
+        # ff1 uses default ordering of impropers, ff2 uses "amber" for the one
+        # problematic improper
+        ff1 = ForceField('amber99sbildn.xml')
+        ff2 = ForceField(StringIO(xml), 'amber99sbildn.xml')
+
+        system1 = ff1.createSystem(pdb.topology)
+        system2 = ff2.createSystem(pdb.topology)
+
+        imp1 = system1.getForce(2).getTorsionParameters(158)
+        imp2 = system2.getForce(0).getTorsionParameters(158)
+
+        system1_indexes = [imp1[0], imp1[1], imp1[2], imp1[3]]
+        system2_indexes = [imp2[0], imp2[1], imp2[2], imp2[3]]
+
+        self.assertEqual(system1_indexes, [51, 56, 54, 55])
+        self.assertEqual(system2_indexes, [51, 55, 54, 56])
+
 class AmoebaTestForceField(unittest.TestCase):
     """Test the ForceField.createSystem() method with the AMOEBA forcefield."""
 
@@ -640,7 +845,7 @@ class AmoebaTestForceField(unittest.TestCase):
 
 
     def test_NonbondedMethod(self):
-        """Test all five options for the nonbondedMethod parameter."""
+        """Test both options for the nonbondedMethod parameter."""
 
         methodMap = {NoCutoff:AmoebaMultipoleForce.NoCutoff,
                      PME:AmoebaMultipoleForce.PME}

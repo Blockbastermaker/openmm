@@ -9,7 +9,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2013 Stanford University and the Authors.           *
+ * Portions copyright (c) 2013-2016 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -36,6 +36,7 @@
 #include "CpuCustomGBForce.h"
 #include "CpuCustomManyParticleForce.h"
 #include "CpuCustomNonbondedForce.h"
+#include "CpuGayBerneForce.h"
 #include "CpuGBSAOBCForce.h"
 #include "CpuLangevinDynamics.h"
 #include "CpuNeighborList.h"
@@ -53,8 +54,6 @@ namespace OpenMM {
  */
 class CpuCalcForcesAndEnergyKernel : public CalcForcesAndEnergyKernel {
 public:
-    class InitForceTask;
-    class SumForceTask;
     CpuCalcForcesAndEnergyKernel(std::string name, const Platform& platform, CpuPlatform::PlatformData& data, ContextImpl& context);
     /**
      * Initialize the kernel.
@@ -90,6 +89,7 @@ public:
 private:
     CpuPlatform::PlatformData& data;
     Kernel referenceKernel;
+    std::vector<Vec3> lastPositions;
 };
 
 /**
@@ -98,7 +98,7 @@ private:
 class CpuCalcHarmonicAngleForceKernel : public CalcHarmonicAngleForceKernel {
 public:
     CpuCalcHarmonicAngleForceKernel(std::string name, const Platform& platform, CpuPlatform::PlatformData& data) :
-            CalcHarmonicAngleForceKernel(name, platform), data(data), angleIndexArray(NULL), angleParamArray(NULL) {
+            CalcHarmonicAngleForceKernel(name, platform), data(data), angleIndexArray(NULL), angleParamArray(NULL), usePeriodic(false) {
     }
     ~CpuCalcHarmonicAngleForceKernel();
     /**
@@ -128,8 +128,9 @@ private:
     CpuPlatform::PlatformData& data;
     int numAngles;
     int **angleIndexArray;
-    RealOpenMM **angleParamArray;
+    double **angleParamArray;
     CpuBondForce bondForce;
+    bool usePeriodic;
 };
 
 /**
@@ -138,7 +139,7 @@ private:
 class CpuCalcPeriodicTorsionForceKernel : public CalcPeriodicTorsionForceKernel {
 public:
     CpuCalcPeriodicTorsionForceKernel(std::string name, const Platform& platform, CpuPlatform::PlatformData& data) :
-            CalcPeriodicTorsionForceKernel(name, platform), data(data), torsionIndexArray(NULL), torsionParamArray(NULL) {
+            CalcPeriodicTorsionForceKernel(name, platform), data(data), torsionIndexArray(NULL), torsionParamArray(NULL), usePeriodic(false) {
     }
     ~CpuCalcPeriodicTorsionForceKernel();
     /**
@@ -168,8 +169,9 @@ private:
     CpuPlatform::PlatformData& data;
     int numTorsions;
     int **torsionIndexArray;
-    RealOpenMM **torsionParamArray;
+    double **torsionParamArray;
     CpuBondForce bondForce;
+    bool usePeriodic;
 };
 
 /**
@@ -178,7 +180,7 @@ private:
 class CpuCalcRBTorsionForceKernel : public CalcRBTorsionForceKernel {
 public:
     CpuCalcRBTorsionForceKernel(std::string name, const Platform& platform, CpuPlatform::PlatformData& data) :
-            CalcRBTorsionForceKernel(name, platform), data(data), torsionIndexArray(NULL), torsionParamArray(NULL) {
+            CalcRBTorsionForceKernel(name, platform), data(data), torsionIndexArray(NULL), torsionParamArray(NULL), usePeriodic(false) {
     }
     ~CpuCalcRBTorsionForceKernel();
     /**
@@ -208,8 +210,9 @@ private:
     CpuPlatform::PlatformData& data;
     int numTorsions;
     int **torsionIndexArray;
-    RealOpenMM **torsionParamArray;
+    double **torsionParamArray;
     CpuBondForce bondForce;
+    bool usePeriodic;
 };
 
 /**
@@ -246,29 +249,37 @@ public:
     void copyParametersToContext(ContextImpl& context, const NonbondedForce& force);
     /**
      * Get the parameters being used for PME.
-     * 
+     *
      * @param alpha   the separation parameter
      * @param nx      the number of grid points along the X axis
      * @param ny      the number of grid points along the Y axis
      * @param nz      the number of grid points along the Z axis
      */
     void getPMEParameters(double& alpha, int& nx, int& ny, int& nz) const;
+    /**
+     * Get the parameters being used for the dispersion term in LJPME.
+     *
+     * @param alpha   the separation parameter
+     * @param nx      the number of grid points along the X axis
+     * @param ny      the number of grid points along the Y axis
+     * @param nz      the number of grid points along the Z axis
+     */
+    void getLJPMEParameters(double& alpha, int& nx, int& ny, int& nz) const;
 private:
     class PmeIO;
     CpuPlatform::PlatformData& data;
     int numParticles, num14;
     int **bonded14IndexArray;
     double **bonded14ParamArray;
-    double nonbondedCutoff, switchingDistance, rfDielectric, ewaldAlpha, ewaldSelfEnergy, dispersionCoefficient;
-    int kmax[3], gridSize[3];
-    bool useSwitchingFunction, useOptimizedPme, hasInitializedPme;
+    double nonbondedCutoff, switchingDistance, rfDielectric, ewaldAlpha, ewaldDispersionAlpha, ewaldSelfEnergy, dispersionCoefficient;
+    int kmax[3], gridSize[3], dispersionGridSize[3];
+    bool useSwitchingFunction, useOptimizedPme, hasInitializedPme, hasInitializedDispersionPme;
     std::vector<std::set<int> > exclusions;
     std::vector<std::pair<float, float> > particleParams;
-    std::vector<RealVec> lastPositions;
+    std::vector<float> C6params;
     NonbondedMethod nonbondedMethod;
-    CpuNeighborList* neighborList;
     CpuNonbondedForce* nonbonded;
-    Kernel optimizedPme;
+    Kernel optimizedPme, optimizedDispersionPme;
     CpuBondForce bondForce;
 };
 
@@ -311,10 +322,10 @@ private:
     CustomNonbondedForce* forceCopy;
     std::map<std::string, double> globalParamValues;
     std::vector<std::set<int> > exclusions;
-    std::vector<std::string> parameterNames, globalParameterNames;
+    std::vector<std::string> parameterNames, globalParameterNames, energyParamDerivNames;
     std::vector<std::pair<std::set<int>, std::set<int> > > interactionGroups;
+    std::vector<double> longRangeCoefficientDerivs;
     NonbondedMethod nonbondedMethod;
-    CpuNeighborList* neighborList;
     CpuCustomNonbondedForce* nonbonded;
 };
 
@@ -392,15 +403,14 @@ private:
     CpuPlatform::PlatformData& data;
     int numParticles;
     bool isPeriodic;
-    RealOpenMM **particleParamArray;
-    RealOpenMM nonbondedCutoff;
+    double **particleParamArray;
+    double nonbondedCutoff;
     CpuCustomGBForce* ixn;
     std::vector<std::set<int> > exclusions;
-    std::vector<std::string> particleParameterNames, globalParameterNames, valueNames;
+    std::vector<std::string> particleParameterNames, globalParameterNames, energyParamDerivNames, valueNames;
     std::vector<OpenMM::CustomGBForce::ComputationType> valueTypes;
     std::vector<OpenMM::CustomGBForce::ComputationType> energyTypes;
     NonbondedMethod nonbondedMethod;
-    CpuNeighborList* neighborList;
 };
 
 /**
@@ -438,11 +448,47 @@ public:
 private:
     CpuPlatform::PlatformData& data;
     int numParticles;
-    RealOpenMM cutoffDistance;
-    RealOpenMM **particleParamArray;
+    double cutoffDistance;
+    double **particleParamArray;
     CpuCustomManyParticleForce* ixn;
     std::vector<std::string> globalParameterNames;
     NonbondedMethod nonbondedMethod;
+};
+
+/**
+ * This kernel is invoked by GayBerneForce to calculate the forces acting on the system.
+ */
+class CpuCalcGayBerneForceKernel : public CalcGayBerneForceKernel {
+public:
+    CpuCalcGayBerneForceKernel(std::string name, const Platform& platform, CpuPlatform::PlatformData& data) : CalcGayBerneForceKernel(name, platform),
+            data(data), ixn(NULL) {
+    }
+    ~CpuCalcGayBerneForceKernel();
+    /**
+     * Initialize the kernel.
+     *
+     * @param system     the System this kernel will be applied to
+     * @param force      the GayBerneForce this kernel will be used for
+     */
+    void initialize(const System& system, const GayBerneForce& force);
+    /**
+     * Execute the kernel to calculate the forces and/or energy.
+     *
+     * @param context        the context in which to execute this kernel
+     * @param includeForces  true if forces should be calculated
+     * @return the potential energy due to the force
+     */
+    double execute(ContextImpl& context, bool includeForces, bool includeEnergy);
+    /**
+     * Copy changed parameters over to a context.
+     *
+     * @param context    the context to copy parameters to
+     * @param force      the GayBerneForce to copy the parameters from
+     */
+    void copyParametersToContext(ContextImpl& context, const GayBerneForce& force);
+private:
+    CpuPlatform::PlatformData& data;
+    CpuGayBerneForce* ixn;
 };
 
 /**
@@ -478,7 +524,7 @@ public:
 private:
     CpuPlatform::PlatformData& data;
     CpuLangevinDynamics* dynamics;
-    std::vector<RealOpenMM> masses;
+    std::vector<double> masses;
     double prevTemp, prevFriction, prevStepSize;
 };
 
